@@ -346,6 +346,24 @@ def test_a_party_no_table_can_seat_cannot_be_submitted(client, saturday: date) -
     assert client.get("/api/admin/queue").json()["pending"] == []
 
 
+def test_a_booking_without_a_phone_number_is_accepted(client, saturday: date) -> None:
+    """Email is the only required contact detail.
+
+    The receipt and a rejection both travel by email, so a phone number is only for a
+    call the team may never need to make. Requiring it would lose bookings from people
+    who would rather not hand it over.
+    """
+    payload = submit_payload(saturday)
+    payload["phone"] = None
+
+    response = client.post("/api/submit", json=payload)
+
+    assert response.status_code == 200
+    row = client.get("/api/admin/queue").json()["pending"][0]
+    assert row["phone"] is None
+    assert row["email"] == "jean@example.com"
+
+
 def test_an_incomplete_submission_names_what_is_missing(client, saturday: date) -> None:
     payload = submit_payload(saturday)
     payload["email"] = None

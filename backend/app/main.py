@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .availability import (
     AVAILABLE,
@@ -56,7 +56,9 @@ from .schemas import (
     SlotValues,
     SubmitRequest,
     SubmitResponse,
+    TtsRequest,
 )
+from .speech import stt_available, synthesize, transcribe
 from .storage import Store
 from .validate import parse_iso_date, sanitize
 
@@ -485,6 +487,53 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         services.store.reset()
         await services.broker.publish("reservation", {"type": "reset"})
         return {"cleared": True}
+
+    # -- speech -------------------------------------------------------------
+
+    @app.get("/api/speech/capabilities")
+    async def speech_capabilities() -> dict[str, Any]:
+        """What the browser should use for voice mode.
+
+        Asked for rather than assumed, because whether ElevenLabs is configured is a
+        server-side fact and the client must not ship a key to find out. With no key
+        the recorder path is unavailable and voice mode falls back to the browser's
+        own speech recognition.
+        """
+        premium = bool(resolved.elevenlabs_api_key)
+        return {
+            "elevenlabs": premium,
+            "tts_provider": "elevenlabs" if premium else "edge-tts",
+            "server_stt": stt_available(resolved),
+        }
+
+    @app.post("/api/tts")
+    async def text_to_speech(payload: TtsRequest) -> Any:
+        audio = await synthesize(payload.text, resolved)
+        if audio is None:
+            return JSONResponse(status_code=502, content={"error": "tts_unavailable"})
+
+        return Response(
+            content=audio.data,
+            media_type=audio.media_type,
+            headers={
+                "X-TTS-Provider": audio.provider,
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.post("/api/stt")
+    async def speech_to_text(file: UploadFile = File(...)) -> Any:
+        blob = await file.read()
+        text = await transcribe(
+            blob,
+            file.filename or "utterance.webm",
+            file.content_type or "audio/webm",
+            resolved,
+        )
+        if text is None:
+            return JSONResponse(status_code=502, content={"error": "stt_unavailable"})
+
+        return {"text": text}
 
     return app
 

@@ -176,7 +176,9 @@ class ReservationOut(BaseModel):
     table_type: str
     name: str
     email: str
-    phone: str
+    # Optional: email is the only required contact channel, and a phone number is
+    # only there in case the team has to call.
+    phone: str | None = None
     special_requests: str | None = None
     status: str
     created_at: str
@@ -187,6 +189,12 @@ class QueueResponse(BaseModel):
     pending: list[ReservationOut] = Field(default_factory=list)
     official: list[ReservationOut] = Field(default_factory=list)
     double_booked: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TtsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=600)
 
 
 class ConfigResponse(BaseModel):

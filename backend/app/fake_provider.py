@@ -190,7 +190,6 @@ class FakeProvider:
             availability=availability,
             openings=openings,
             complete=complete,
-            submit=submit,
         )
 
         return AgentOutput(
@@ -459,7 +458,6 @@ class FakeProvider:
         availability: SlotStatus | None,
         openings: tuple[Opening, ...] | None,
         complete: bool,
-        submit: bool,
     ) -> str:
         parts: list[str] = []
 
@@ -514,19 +512,15 @@ class FakeProvider:
             if fact:
                 parts.append(fact)
 
-        if submit:
-            table = (availability.table_id if availability is not None else None) or "a table"
-            parts.append(
-                f"Booking it: {slots.get('date')} at {slots.get('time')} for "
-                f"{slots.get('party_size')}, table {table}, under {slots.get('name')}. "
-                "A receipt is on its way to your email."
-            )
-            return " ".join(parts)
-
+        # Never claim a booking exists. The browser shows a summary card and the
+        # customer confirms there, so anything the agent says before that click is a
+        # promise the system has not kept yet. The only "booked" sentence in this
+        # codebase is the one ChatPanel appends after /api/submit returns 200.
         if complete:
             parts.append(
                 f"So that is {slots.get('date')} at {slots.get('time')} for "
-                f"{slots.get('party_size')} under {slots.get('name')}. Shall I book it?"
+                f"{slots.get('party_size')} under {slots.get('name')}. The details are "
+                "on screen: please check them and confirm there."
             )
             return " ".join(parts)
 

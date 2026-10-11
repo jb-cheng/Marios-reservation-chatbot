@@ -68,9 +68,12 @@ SLOT_KEYS = (
     "special_requests",
 )
 
-# Six of the eight slots block a booking. special_requests is asked for but a
-# guest with no requests is a normal guest, and type is only a preference.
-REQUIRED_SLOTS = ("date", "time", "party_size", "name", "email", "phone")
+# Five slots block a booking. Email is the only required contact detail, because it
+# is the channel the receipt and a rejection actually travel on; SMS receipts are not
+# worth building. A phone number is still asked for, but it is optional, and it is
+# only used if the team has to call the guest. `type` is a preference and
+# `special_requests` is a courtesy, so neither blocks anything either.
+REQUIRED_SLOTS = ("date", "time", "party_size", "name", "email")
 
 # The order the agent asks for missing fields, per the brief.
 SLOT_ORDER = (
@@ -181,6 +184,9 @@ class Settings:
     outbox_dir: Path
     tts_voice: str
     elevenlabs_api_key: str | None
+    elevenlabs_voice_id: str
+    elevenlabs_tts_model: str
+    elevenlabs_stt_model: str
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -238,4 +244,13 @@ def load_settings() -> Settings:
         outbox_dir=outbox_dir,
         tts_voice=os.getenv("TTS_VOICE", "en-US-AriaNeural").strip(),
         elevenlabs_api_key=_secret("ELEVENLABS_API_KEY"),
+        # A premade voice, so the demo has one before anyone picks a voice in the
+        # ElevenLabs dashboard.
+        elevenlabs_voice_id=os.getenv(
+            "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"
+        ).strip(),
+        elevenlabs_tts_model=os.getenv(
+            "ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5"
+        ).strip(),
+        elevenlabs_stt_model=os.getenv("ELEVENLABS_STT_MODEL", "scribe_v1").strip(),
     )

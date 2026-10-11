@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS pending (
     table_type       TEXT NOT NULL,
     name             TEXT NOT NULL,
     email            TEXT NOT NULL,
-    phone            TEXT NOT NULL,
+    phone            TEXT,
     special_requests TEXT,
     status           TEXT NOT NULL DEFAULT 'pending',
     created_at       TEXT NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS official (
     table_type       TEXT NOT NULL,
     name             TEXT NOT NULL,
     email            TEXT NOT NULL,
-    phone            TEXT NOT NULL,
+    phone            TEXT,
     special_requests TEXT,
     approved_at      TEXT NOT NULL
 )
@@ -97,7 +97,7 @@ class Reservation:
     table_type: str
     name: str
     email: str
-    phone: str
+    phone: str | None
     special_requests: str | None
     status: str
     created_at: str
@@ -176,7 +176,7 @@ class Store:
                     slots.get("type") or "standard",
                     slots["name"],
                     slots["email"],
-                    slots["phone"],
+                    slots.get("phone"),
                     slots.get("special_requests"),
                     PENDING,
                     created,
@@ -194,7 +194,7 @@ class Store:
             table_type=slots.get("type") or "standard",
             name=slots["name"],
             email=slots["email"],
-            phone=slots["phone"],
+            phone=slots.get("phone"),
             special_requests=slots.get("special_requests"),
             status=PENDING,
             created_at=created,
