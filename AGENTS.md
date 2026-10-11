@@ -79,6 +79,17 @@ Verified against the live APIs, and each one cost a failed call to discover.
 - Measured per structured turn: Groq about 1.8s, Cohere 4.5s to 13.7s. The brief's 3
   second fallback threshold was written before anything was measured and would have
   abandoned most Cohere turns, so the default is 15000ms.
+- Command A+ announces bookings it did not make. Told in the prompt never to say or
+  imply that a reservation exists, it returned "Your reservation for Saturday the 17th
+  at 19:00 for 4 has been confirmed" and, on another turn, "Your reservation ... is
+  set; you can still add a phone number if you like". It also asked which seating type
+  the customer wanted after every required field was filled and the customer had said
+  "yes". `/api/chat` writes nothing, so both are now caught server side and replaced
+  with a line about the card; the sentences are in `tests/test_confirmation_gate.py`
+  verbatim. Treat an instruction in a prompt as a preference, not a guarantee.
+- Voice mode speaks every assistant reply, including the greeting on page load, so
+  reloads cost TTS calls once a working ElevenLabs key is in place. Text mode costs
+  nothing. Edge TTS is free and is what runs while the key is rejected.
 - ElevenLabs answers a voice id pasted into `ELEVENLABS_API_KEY` with 401
   `invalid_api_key`. Keys are long `sk_` strings; voice ids are 20 characters of mixed
   case such as `21m00Tcm4TlvDq8ikWAM`. `/api/speech/capabilities` still advertises the
@@ -130,7 +141,11 @@ Verified against the live APIs, and each one cost a failed call to discover.
   transport is what runs, writing `.eml` files to `backend/outbox/`.
 - ElevenLabs itself is unverified end to end. The key currently in `.env` is rejected,
   so every observation of the speech layer so far came from the Edge TTS and browser
-  recognition fallbacks. What has been seen working in a browser: `/api/tts` audio
-  decoded into a 5.2s buffer, the analyser reading real waveform from it, the avatar
-  holding `speaking` for the length of the clip, push to talk recording and uploading,
-  and the downgrade to browser recognition after a 502.
+  recognition fallbacks. The request shapes were checked against the published OpenAPI
+  spec instead: both paths answer 401 rather than 404 or 405, `text` and `model_id` are
+  the TTS body fields, `model_id` is the only required STT form field, and `text` is a
+  required field of the STT response. So a valid key is the missing piece, not the
+  integration. What has been seen working in a browser: `/api/tts` audio decoded into a
+  5.2s buffer, the analyser reading real waveform from it, the avatar holding `speaking`
+  for the length of the clip, push to talk recording and uploading, and the downgrade to
+  browser recognition after a 502.
