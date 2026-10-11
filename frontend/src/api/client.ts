@@ -201,13 +201,29 @@ export function fetchSpeechCapabilities(): Promise<SpeechCapabilities> {
   return request<SpeechCapabilities>("/api/speech/capabilities");
 }
 
+export type SynthesizedSpeech = {
+  audio: ArrayBuffer;
+  /**
+   * Which provider actually spoke, from the response header.
+   *
+   * The capabilities endpoint cannot answer this. It reports what is configured, and
+   * a key that is present but rejected still configures ElevenLabs, so the only
+   * truthful source is the provider that answered. Without it a fallback is silent
+   * and voice mode looks like it is working on the premium voice when it is not.
+   */
+  provider: string | null;
+};
+
 /** Audio for one line, decoded by the caller so an analyser can read the samples. */
-export async function synthesizeSpeech(text: string): Promise<ArrayBuffer> {
+export async function synthesizeSpeech(text: string): Promise<SynthesizedSpeech> {
   const response = await fetch(`${API_BASE}/api/tts`, jsonBody({ text }));
   if (!response.ok) {
     throw new ApiError(`speech synthesis failed with ${response.status}`, response.status, null);
   }
-  return response.arrayBuffer();
+  return {
+    audio: await response.arrayBuffer(),
+    provider: response.headers.get("x-tts-provider"),
+  };
 }
 
 /** One recorded utterance, transcribed on the server. */

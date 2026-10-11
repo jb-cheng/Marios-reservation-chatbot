@@ -9,12 +9,15 @@
  */
 
 import { synthesizeSpeech } from "@/api/client";
+import type { SynthesizedSpeech } from "@/api/client";
 
 export type SpeakHandlers = {
   /** Zero to one, sampled per animation frame while audio plays. */
   onLevel: (level: number) => void;
   onEnd: () => void;
   onError: (message: string) => void;
+  /** Which voice ended up speaking, so a fallback is visible rather than silent. */
+  onProvider?: (provider: string) => void;
 };
 
 export type SpeechPlayback = {
@@ -61,6 +64,7 @@ function browserFallback(text: string, handlers: SpeakHandlers): SpeechPlayback 
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.onend = () => handlers.onEnd();
   utterance.onerror = () => handlers.onEnd();
+  handlers.onProvider?.("browser");
   synth.speak(utterance);
 
   return {
@@ -81,9 +85,9 @@ export async function speak(
     return { stop: () => undefined };
   }
 
-  let audio: ArrayBuffer;
+  let speech: SynthesizedSpeech;
   try {
-    audio = await synthesizeSpeech(trimmed);
+    speech = await synthesizeSpeech(trimmed);
   } catch {
     return browserFallback(trimmed, handlers);
   }
@@ -93,10 +97,14 @@ export async function speak(
 
   let buffer: AudioBuffer;
   try {
-    buffer = await context.decodeAudioData(audio);
+    buffer = await context.decodeAudioData(speech.audio);
   } catch {
     return browserFallback(trimmed, handlers);
   }
+
+  // Reported only once the audio has actually decoded, so the label names the voice
+  // the customer is hearing rather than the one that was asked for.
+  handlers.onProvider?.(speech.provider ?? "unknown");
 
   const source = context.createBufferSource();
   const analyser = context.createAnalyser();

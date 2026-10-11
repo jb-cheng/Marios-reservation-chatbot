@@ -85,6 +85,24 @@ function describeInvalid(outcome: Extract<SubmitOutcome, { kind: "invalid" }>): 
   }
 }
 
+/**
+ * What to call the voice that just spoke.
+ *
+ * Named from the provider that answered rather than the one that is configured,
+ * because a key the provider rejects still configures ElevenLabs. Without this, voice
+ * mode runs on a fallback and looks like it is running on the premium voice, which is
+ * the kind of thing that is only discovered during a demonstration.
+ */
+const VOICE_LABELS: Record<string, string> = {
+  elevenlabs: "ElevenLabs",
+  "edge-tts": "Edge TTS, because ElevenLabs did not answer",
+  browser: "this browser, because the server produced no audio",
+};
+
+function voiceLabel(provider: string): string {
+  return VOICE_LABELS[provider] ?? provider;
+}
+
 export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const [config, setConfig] = useState<RestaurantConfig | null>(null);
   const [state, setState] = useState<ReservationState>(() => readState(store));
@@ -103,6 +121,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const [transcribing, setTranscribing] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [level, setLevel] = useState(0);
+  const [voiceProvider, setVoiceProvider] = useState<string | null>(null);
   const [speechCaps, setSpeechCaps] = useState<SpeechCapabilities | null>(null);
   const [lastTurnSpoken, setLastTurnSpoken] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -182,6 +201,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
 
       void speak(text, {
         onLevel: setLevel,
+        onProvider: setVoiceProvider,
         onEnd: () => {
           setSpeaking(false);
           setLevel(0);
@@ -562,6 +582,9 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
               ? "This booking is confirmed. Start a new request below."
               : "Reservations, questions about the room, and nothing else."}
           </p>
+          {mode === "voice" && voiceProvider !== null && (
+            <p className="text-[11px] text-white/30">Voice: {voiceLabel(voiceProvider)}</p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 p-1">
           {(["text", "voice"] as const).map((option) => (
