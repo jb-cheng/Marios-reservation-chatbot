@@ -27,6 +27,39 @@ test("punctuation and a curly apostrophe from speech recognition still count", (
   assert.equal(isAffirmation("That’s right"), true);
 });
 
+/** Exact phrases alone were too strict: these are how people agree out loud. */
+test("the ways a customer actually says yes out loud count", () => {
+  const messages = [
+    "yes please book it",
+    "yeah go ahead",
+    "yes please",
+    "do it",
+    "sounds good",
+    "that works",
+    "ok perfect",
+    "it's fine",
+  ];
+
+  for (const message of messages) {
+    assert.equal(isAffirmation(message), true, message);
+  }
+});
+
+test("a question is not an agreement, with or without its question mark", () => {
+  const messages = [
+    "is that ok",
+    "what times are free",
+    "can you hold it",
+    "do you have a patio",
+    "anything else",
+    "yes?",
+  ];
+
+  for (const message of messages) {
+    assert.equal(isAffirmation(message), false, message);
+  }
+});
+
 /**
  * The cases that matter. Each of these reached a booking when the model's own
  * submit flag was the only gate, because each contains a yes somewhere.

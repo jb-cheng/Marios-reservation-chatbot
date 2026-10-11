@@ -237,9 +237,77 @@ CONFIRM_ASK = (
     "Everything I need is on the card. Please check the details there and confirm."
 )
 
+NOT_BOOKED_YET = (
+    "Nothing is booked yet. Tell me what is missing and I will put it on the card, "
+    "and the booking is only made when you confirm it there."
+)
+
 # Longest customer message that can be answered by nudging them back to the card.
 # Past this a message is a question of its own and deserves the model's answer.
 MAX_NUDGE_WORDS = 3
+
+# Sentences that can only be true after /api/submit has answered 200.
+#
+# /api/chat never writes anything, so a reply saying a table is held is a falsehood
+# no matter how well the model was instructed. The prompt forbids it and the
+# deterministic provider never says it, but the same prompt also says not to collect
+# optional fields once the required ones are filled, and Command A+ did that twice
+# while this was being tested. An instruction is not a guarantee.
+#
+# The live model produced "Your reservation for Saturday the 17th at 19:00 for 4 has
+# been confirmed", which is why the subject and the verb are matched with a gap
+# between them rather than as one phrase, and why the scan is per sentence: a
+# whole-reply match cannot tell a claim from a denial that happens to share a word.
+_CLAIM_TENSE = r"(?:is|are|was|were|has been|have been|will be|is now|'s)\s+"
+_CLAIM_VERB = _CLAIM_TENSE + r"(?:booked|confirmed|held|reserved|secured|all set|set|locked)"
+# "That table is booked" is an availability fact about somebody else's evening, not a
+# claim about this customer, so a table or a seat only counts with the stronger verbs.
+_CLAIM_VERB_STRONG = _CLAIM_TENSE + r"(?:confirmed|held|reserved|secured|all set|set|locked)"
+
+BOOKING_CLAIMS = (
+    re.compile(
+        r"\b(?:your|the|our|my)\s+(?:booking|reservation)\b[^.!?]{0,80}?\b"
+        + _CLAIM_VERB
+        + r"\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:your|the|our|my)\s+(?:table|seat)\b[^.!?]{0,80}?\b"
+        + _CLAIM_VERB_STRONG
+        + r"\b",
+        re.I,
+    ),
+    re.compile(r"\byou(?:'re| are)(?: all)? (?:booked|confirmed|set|good to go)\b", re.I),
+    re.compile(r"\b(?:i|we)(?:'ve| have) (?:booked|confirmed|held|reserved|secured)\b", re.I),
+    re.compile(r"\breceipt\b[^.!?]{0,40}?\b(?:sent|emailed|on its way)\b", re.I),
+)
+
+# A claim carrying one of these nearby is qualifying or denying, not claiming: "the
+# table is held once you confirm" is true and should survive. Checked in a window
+# around the match rather than over the whole sentence, because a long sentence can
+# contain both a claim and an unrelated conditional, and the real model produced
+# exactly that: "Your reservation ... is set; you can still add a phone number if you
+# like."
+_SENTENCE_SPLIT = re.compile(r"[.!?]+")
+_QUALIFIER = re.compile(
+    r"(?:\b(?:not|nothing|never|yet|until|once|when|whenever|if|after|before|only|"
+    r"cannot|will not)\b|n't\b)",
+    re.I,
+)
+_QUALIFIER_BEFORE = 24
+_QUALIFIER_AFTER = 32
+
+
+def claims_a_booking(reply: str) -> bool:
+    """Whether a reply says a reservation exists that this endpoint did not create."""
+    for sentence in _SENTENCE_SPLIT.split(reply):
+        for pattern in BOOKING_CLAIMS:
+            for match in pattern.finditer(sentence):
+                start = max(0, match.start() - _QUALIFIER_BEFORE)
+                window = sentence[start : match.end() + _QUALIFIER_AFTER]
+                if not _QUALIFIER.search(window):
+                    return True
+    return False
 
 
 def redirects_from_the_summary(message: str, reply: str, *, complete: bool) -> bool:

@@ -388,9 +388,24 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
           date: state.date,
         });
 
+        // Decided before the reply is shown. Voice mode has no reliable click, so a
+        // spoken yes is the confirmation, but only for a summary that was already on
+        // screen before this turn and only when the customer's own words are an
+        // unambiguous yes. Text mode always books from the card's button, and neither
+        // mode lets the model book on the turn the last field arrives.
+        const willBook =
+          response.submit && mode === "voice" && wasComplete && isAffirmation(text);
+
         commitState(merged);
-        pushMessage({ role: "assistant", content: response.reply });
-        speakReply(response.reply);
+        // A turn that books does not also show the model's line. That line was
+        // written before anything existed, so beside the confirmation it is at best
+        // redundant and at worst asks the customer to confirm a booking that is
+        // already made. confirmBooking always reports what happened, including when
+        // the room said no.
+        if (!willBook) {
+          pushMessage({ role: "assistant", content: response.reply });
+          speakReply(response.reply);
+        }
         setAvailability(response.availability);
         setOpenings(response.openings ?? []);
         setSuggestions(
@@ -403,12 +418,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
         );
         setPhase("idle");
 
-        // Voice mode has no reliable click, so a spoken yes is the confirmation,
-        // but only for a summary that was already on screen before this turn and
-        // only when the customer's own words are an unambiguous yes. Text mode
-        // always books from the card's button, and neither mode lets the model book
-        // on the turn the last field arrives.
-        if (response.submit && mode === "voice" && wasComplete && isAffirmation(text)) {
+        if (willBook) {
           await confirmBooking(merged);
         }
       } catch (error) {

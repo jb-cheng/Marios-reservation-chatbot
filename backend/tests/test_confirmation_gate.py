@@ -18,7 +18,12 @@ import pytest
 
 from app import main as main_module
 from app.config import load_settings
-from app.prompts import CONFIRM_ASK, redirects_from_the_summary
+from app.prompts import (
+    CONFIRM_ASK,
+    NOT_BOOKED_YET,
+    claims_a_booking,
+    redirects_from_the_summary,
+)
 from app.schemas import AgentOutput, SlotValues
 from app.validate import is_complete
 
@@ -187,3 +192,80 @@ def test_a_long_question_keeps_its_answer(
     body = post(client, "can we bring a birthday cake for my mother", slots).json()
 
     assert body["reply"] == answer
+
+
+# -- claiming a booking -----------------------------------------------------
+
+
+def test_a_sentence_only_submit_could_make_true_is_recognised() -> None:
+    claims = [
+        # Verbatim from Command A+ during testing, which is why the subject and the
+        # verb are matched with a gap between them rather than as one phrase.
+        "Thank you. Your reservation for Saturday the 17th at 19:00 for 4 has been confirmed.",
+        # Also verbatim, and the reason the qualifier check looks at a window around
+        # the match instead of the whole sentence: the conditional at the end is
+        # about an optional field and has nothing to do with the claim at the front.
+        "Hello! Your reservation for Saturday the 24th at 20:00 for two is set; you can "
+        "still add a phone number or special request if you like.",
+        "You're booked for Saturday the 17th at 19:00.",
+        "You are all set for four.",
+        "Your reservation is confirmed.",
+        "Your table has been held.",
+        "Your seat is reserved for 19:00.",
+        "I've booked that for you.",
+        "We have reserved the table.",
+        "A receipt has been sent to jean@example.com.",
+    ]
+
+    for claim in claims:
+        assert claims_a_booking(claim), claim
+
+
+def test_honest_sentences_about_a_booking_are_left_alone() -> None:
+    honest = [
+        "Nothing is booked yet.",
+        "I cannot book anything myself; the card does that.",
+        "Please check the details on screen and confirm.",
+        "Once you confirm, the team verifies it and a receipt goes to your email.",
+        "The booking is only created when you confirm it there.",
+        "That time is not available, but 19:30 is.",
+        # Availability facts, which use the same words for the opposite meaning.
+        "19:00 on Saturday is fully booked. I have 19:30 and 20:00 free instead.",
+        "That table is booked at seven, but the patio is free.",
+        "The table is held once you confirm on screen.",
+    ]
+
+    for line in honest:
+        assert not claims_a_booking(line), line
+
+
+def test_a_false_claim_is_replaced_when_the_summary_is_up(
+    client, monkeypatch: pytest.MonkeyPatch, saturday: date
+) -> None:
+    slots = {**COMPLETE, "date": saturday.isoformat()}
+    stub_provider(
+        monkeypatch,
+        "You're booked for Saturday the 17th at 19:00 for four. See you then!",
+        slots=slots,
+    )
+
+    body = post(client, "jean@example.com", slots).json()
+
+    assert body["reply"] == CONFIRM_ASK
+    assert body["submit"] is False
+
+
+def test_a_false_claim_before_the_summary_says_nothing_is_booked(
+    client, monkeypatch: pytest.MonkeyPatch, saturday: date
+) -> None:
+    """CONFIRM_ASK would be a lie here too, since there is no complete card to
+    point at. The replacement has to fit the state the customer is actually in."""
+    slots = {**COMPLETE, "date": saturday.isoformat()}
+    slots.pop("email")
+    stub_provider(monkeypatch, "Your reservation is confirmed for four.", slots=slots)
+
+    body = post(client, "table for four", slots).json()
+
+    assert body["reply"] == NOT_BOOKED_YET
+    assert body["submit"] is False
+    assert body["slots"]["email"] is None

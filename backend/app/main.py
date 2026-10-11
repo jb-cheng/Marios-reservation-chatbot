@@ -40,7 +40,9 @@ from .guardrails import REFUSAL, check_inbound, check_outbound
 from .llm import ChatProvider, agent_output_schema, complete_turn, provider_chain
 from .prompts import (
     CONFIRM_ASK,
+    NOT_BOOKED_YET,
     asks_about_availability,
+    claims_a_booking,
     conflict_reply,
     openings_reply,
     redirects_from_the_summary,
@@ -257,21 +259,24 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
                 cleaned.get("type") or trusted.get("type"),
             )
 
-        # The other half of never claiming a booking is never wandering off before
-        # the customer can make one. Observed on Command A+ with every required field
-        # filled and the message "yes": it asked which seating type they wanted, so
-        # the confirmation the card was waiting for never arrived. Nothing changed on
-        # that turn, so the question was invented, and a deterministic line replaces
-        # it. Left alone when the model did report a confirmation, because then the
-        # reply and the flag have to keep agreeing.
-        if (
+        # Nothing this endpoint does creates a booking, so a reply that says one
+        # exists is false by construction, and a reply that asks a question the
+        # customer has already answered keeps them away from the card that could
+        # create it. Both are replaced with a line that is true either way. See
+        # BOOKING_CLAIMS in prompts for why the instruction in the prompt is not
+        # treated as a guarantee.
+        merged_complete = is_complete({**trusted, **cleaned}, restaurant)
+
+        if not outbound.blocked and claims_a_booking(reply):
+            reply = CONFIRM_ASK if merged_complete else NOT_BOOKED_YET
+        elif (
             not outbound.blocked
             and not changed
             and not output.submit
             and redirects_from_the_summary(
                 payload.message,
                 reply,
-                complete=is_complete({**trusted, **cleaned}, restaurant),
+                complete=merged_complete,
             )
         ):
             reply = CONFIRM_ASK
