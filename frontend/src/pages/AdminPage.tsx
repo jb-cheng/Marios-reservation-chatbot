@@ -240,7 +240,12 @@ function Table({
             <Cell>{row.name}</Cell>
             <Cell>
               {row.email}
-              <span className="block text-xs text-neutral-400">{row.phone}</span>
+              {/* An absent number has to read as absent. The team calls when a
+                  rejection needs explaining, and a blank line under the email says
+                  nothing about whether that is an option. */}
+              <span className="block text-xs text-neutral-400">
+                {row.phone ?? "no phone, email only"}
+              </span>
             </Cell>
             <Cell>{row.special_requests ?? ""}</Cell>
             <Cell>{age(row.created_at)}</Cell>
