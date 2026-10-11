@@ -134,17 +134,20 @@ function createId(): string {
 }
 
 export const LEGACY_MESSAGES_KEY = "reservation_messages";
+export const LEGACY_MODE_KEY = "reservation_mode";
 
 /**
- * Deletes the transcript key that earlier builds wrote.
+ * Deletes keys that earlier builds wrote and this one no longer uses.
  *
- * Nothing reads it any more, but ignoring it is not the same as removing it: a
- * returning visitor would otherwise keep their previous conversation on disk
- * indefinitely, including every name, email address and phone number they typed
- * into it. Not writing it going forward is only half of the fix.
+ * Nothing reads them, but ignoring a key is not the same as removing it: a returning
+ * visitor would otherwise keep their previous conversation on disk indefinitely,
+ * including every name, email address and phone number they typed into it. The mode
+ * key held no personal data, and it goes for the simpler reason that a UI preference
+ * was never supposed to be in this storage at all.
  */
 export function purgeLegacyKeys(store: KVStorage): void {
   store.removeItem(LEGACY_MESSAGES_KEY);
+  store.removeItem(LEGACY_MODE_KEY);
 }
 
 /**

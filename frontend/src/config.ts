@@ -15,24 +15,18 @@ export const API_BASE = "";
 
 export type AgentMode = "voice" | "text";
 
-const MODE_KEY = "reservation_mode";
-
-function readStoredMode(): AgentMode | null {
-  try {
-    const stored = globalThis.localStorage.getItem(MODE_KEY);
-    return stored === "voice" || stored === "text" ? stored : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Voice first or text first, decided without a code change.
  *
- * Precedence is a query parameter, then a build-time variable, then what the
- * visitor chose last. The query parameter is what makes criterion 10 a toggle
- * rather than a rebuild: `?mode=voice` and `?mode=text` are the two arms of the
- * A/B, and a presenter can switch between them mid-demo.
+ * Precedence is a query parameter, then a build-time variable, then text. The query
+ * parameter is what makes criterion 10 a toggle rather than a rebuild: `?mode=voice`
+ * and `?mode=text` are the two arms of the A/B, and a presenter can switch between
+ * them mid-demo.
+ *
+ * The choice is deliberately not persisted. localStorage holds the slot object and
+ * the session id, and nothing else: a UI preference is not part of the reservation,
+ * and writing one there would put a third key in the only storage this app is
+ * allowed to use.
  */
 export function initialMode(): AgentMode {
   try {
@@ -40,22 +34,10 @@ export function initialMode(): AgentMode {
     const requested = params.get("mode");
     if (requested === "voice" || requested === "text") return requested;
   } catch {
-    // No location available, fall through to the stored or built default.
+    // No location available, fall through to the built default.
   }
 
-  const stored = readStoredMode();
-  if (stored !== null) return stored;
-
-  const built = import.meta.env.VITE_AGENT_MODE;
-  return built === "voice" ? "voice" : "text";
-}
-
-export function persistMode(mode: AgentMode): void {
-  try {
-    globalThis.localStorage.setItem(MODE_KEY, mode);
-  } catch {
-    // Private browsing with storage disabled should not break the conversation.
-  }
+  return import.meta.env.VITE_AGENT_MODE === "voice" ? "voice" : "text";
 }
 
 export const ASSISTANT_NAME = "Mario";
@@ -92,7 +74,7 @@ export const PLACEHOLDER_CONFIG: RestaurantConfig = {
     "phone",
     "special_requests",
   ],
-  required_slots: ["date", "time", "party_size", "name", "email", "phone"],
+  required_slots: ["date", "time", "party_size", "name", "email"],
   slot_order: [
     "date",
     "time",

@@ -69,7 +69,7 @@ const CONFIG: RestaurantConfig = {
     "phone",
     "special_requests",
   ],
-  required_slots: ["date", "time", "party_size", "name", "email", "phone"],
+  required_slots: ["date", "time", "party_size", "name", "email"],
   slot_order: [
     "date",
     "time",

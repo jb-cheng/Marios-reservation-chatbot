@@ -51,7 +51,7 @@ const CONFIG: RestaurantConfig = {
     "phone",
     "special_requests",
   ],
-  required_slots: ["date", "time", "party_size", "name", "email", "phone"],
+  required_slots: ["date", "time", "party_size", "name", "email"],
   slot_order: [
     "date",
     "time",
@@ -283,16 +283,14 @@ test("a merge is one pass, so a corrected date and a corrected time coexist", ()
   assert.equal(merged.time, "20:00");
 });
 
-test("acceptance 6 support: completeness uses the six required slots only", () => {
-  const missingPhone = filled({ phone: null });
-  assert.equal(isComplete(missingPhone, CONFIG), false);
-
-  const noRequests = filled();
-  assert.equal(noRequests.special_requests, null);
-  assert.equal(isComplete(noRequests, CONFIG), true);
-
-  const noType = filled({ type: null });
-  assert.equal(isComplete(noType, CONFIG), true);
+test("completeness needs five slots, and a phone number is not one of them", () => {
+  // Email is the only required contact detail, because it is the channel the receipt
+  // and a rejection travel on. A phone number is asked for but optional.
+  assert.equal(isComplete(filled({ phone: null }), CONFIG), true);
+  assert.equal(isComplete(filled({ email: null }), CONFIG), false);
+  assert.equal(isComplete(filled({ name: null }), CONFIG), false);
+  assert.equal(isComplete(filled(), CONFIG), true);
+  assert.equal(isComplete(filled({ type: null }), CONFIG), true);
 });
 
 test("the chat payload carries the eight slots and nothing else", () => {
@@ -363,13 +361,15 @@ test("a transcript left by an older build is deleted, not merely ignored", () =>
   /**
    * Stopping the write is half the fix. Without this, a returning visitor keeps
    * their previous conversation on disk, including every email address and phone
-   * number they typed into it.
+   * number they typed into it. The mode key held nothing personal and goes because a
+   * UI preference was never supposed to be persisted here at all.
    */
   const store = new MemoryStorage();
   store.setItem(
     "reservation_messages",
     JSON.stringify([{ role: "user", content: "reach me at jean@example.com" }]),
   );
+  store.setItem("reservation_mode", "voice");
 
   purgeLegacyKeys(store);
 

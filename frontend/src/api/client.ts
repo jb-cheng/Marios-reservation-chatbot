@@ -189,6 +189,47 @@ export function resetQueue(): Promise<{ cleared: boolean }> {
  * with a full refetch on reconnect so a dropped stream cannot leave the queue
  * showing stale rows.
  */
+export type SpeechCapabilities = {
+  elevenlabs: boolean;
+  tts_provider: string;
+  server_stt: boolean;
+};
+
+/** Asked rather than inferred: whether ElevenLabs is configured is a server-side
+ *  fact, and discovering it in the browser would mean shipping the key. */
+export function fetchSpeechCapabilities(): Promise<SpeechCapabilities> {
+  return request<SpeechCapabilities>("/api/speech/capabilities");
+}
+
+/** Audio for one line, decoded by the caller so an analyser can read the samples. */
+export async function synthesizeSpeech(text: string): Promise<ArrayBuffer> {
+  const response = await fetch(`${API_BASE}/api/tts`, jsonBody({ text }));
+  if (!response.ok) {
+    throw new ApiError(`speech synthesis failed with ${response.status}`, response.status, null);
+  }
+  return response.arrayBuffer();
+}
+
+/** One recorded utterance, transcribed on the server. */
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const form = new FormData();
+  form.append("file", blob, "utterance.webm");
+
+  const response = await fetch(`${API_BASE}/api/stt`, { method: "POST", body: form });
+  const text = await response.text();
+  const payload: unknown = text === "" ? null : safeParse(text);
+
+  if (!response.ok) {
+    throw new ApiError(
+      `transcription failed with ${response.status}`,
+      response.status,
+      payload,
+    );
+  }
+
+  return String((payload as { text?: string } | null)?.text ?? "");
+}
+
 export function subscribeQueue(handlers: {
   onEvent: () => void;
   onOpen?: () => void;

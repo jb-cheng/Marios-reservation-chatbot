@@ -4,9 +4,11 @@ import { RotateCcw } from "lucide-react";
 import {
   ApiError,
   fetchConfig,
+  fetchSpeechCapabilities,
   postChat,
   submitReservation,
 } from "@/api/client";
+import type { SpeechCapabilities } from "@/api/client";
 import { Avatar } from "@/components/Avatar";
 import type { AvatarState } from "@/components/Avatar";
 import { Composer } from "@/components/Composer";
@@ -17,11 +19,14 @@ import {
   ASSISTANT_NAME,
   PLACEHOLDER_CONFIG,
   initialMode,
-  persistMode,
 } from "@/config";
 import type { AgentMode } from "@/config";
+import { createRecorder } from "@/speech/recorder";
+import type { Recorder } from "@/speech/recorder";
 import { createRecognizer, isSpeechRecognitionSupported } from "@/speech/stt";
 import type { Recognizer } from "@/speech/stt";
+import { speak } from "@/speech/tts";
+import type { SpeechPlayback } from "@/speech/tts";
 import { isComplete, mergeSlots } from "@/state/merge";
 import {
   browserStorage,
@@ -94,6 +99,10 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [mode, setMode] = useState<AgentMode>(() => initialMode());
   const [listening, setListening] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [level, setLevel] = useState(0);
+  const [speechCaps, setSpeechCaps] = useState<SpeechCapabilities | null>(null);
   const [lastTurnSpoken, setLastTurnSpoken] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -102,6 +111,8 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   // before either render lands.
   const submittingRef = useRef(false);
   const recognizerRef = useRef<Recognizer | null>(null);
+  const recorderRef = useRef<Recorder | null>(null);
+  const playbackRef = useRef<SpeechPlayback | null>(null);
   const micSupported = isSpeechRecognitionSupported();
 
   const commitState = useCallback(
@@ -127,6 +138,107 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   useEffect(() => {
     purgeLegacyKeys(store);
   }, [store]);
+
+  // What the server can do for voice mode. Asked rather than inferred, because
+  // whether ElevenLabs is configured is a server-side fact and finding out in the
+  // browser would mean shipping the key.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchSpeechCapabilities()
+      .then((caps) => {
+        if (!cancelled) setSpeechCaps(caps);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSpeechCaps({
+            elevenlabs: false,
+            tts_provider: "unavailable",
+            server_stt: false,
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Speak one assistant line, in voice mode only.
+   *
+   * Text mode stays silent on purpose: nobody wants a page reading itself aloud
+   * when they are reading it, and it keeps the API cost out of the path that does
+   * not need it. Any previous line is stopped first, so a fast exchange cannot
+   * leave two replies talking over each other.
+   */
+  const speakReply = useCallback(
+    (text: string) => {
+      if (mode !== "voice") return;
+
+      playbackRef.current?.stop();
+      setSpeaking(true);
+
+      void speak(text, {
+        onLevel: setLevel,
+        onEnd: () => {
+          setSpeaking(false);
+          setLevel(0);
+          playbackRef.current = null;
+        },
+        onError: (message) => {
+          setNotice(message);
+          setSpeaking(false);
+        },
+      }).then((playback) => {
+        playbackRef.current = playback;
+      });
+    },
+    [mode],
+  );
+
+  // Built once. Transcripts are dispatched through sendRef, so a state change
+  // mid-utterance cannot tear down a recording in progress.
+  useEffect(() => {
+    recorderRef.current = createRecorder({
+      onStart: () => {
+        setListening(true);
+        setNotice(null);
+      },
+      onTranscribing: () => {
+        setListening(false);
+        setTranscribing(true);
+      },
+      onStop: () => {
+        setListening(false);
+        setTranscribing(false);
+      },
+      onTranscript: (text) => {
+        setLastTurnSpoken(true);
+        void sendRef.current(text, true);
+      },
+      onError: (message) => {
+        setNotice(message);
+        setListening(false);
+        setTranscribing(false);
+      },
+      // A configured key that the provider rejects looks exactly like no key at
+      // all from out here, so the capability is withdrawn for the rest of the
+      // visit and the next tap goes to the browser's own recognition.
+      onUnavailable: () => {
+        setSpeechCaps((caps) => (caps === null ? caps : { ...caps, server_stt: false }));
+        setNotice(
+          "Server transcription is not responding, so the microphone will use this browser's recognition. Tap it again and say that once more.",
+        );
+      },
+    });
+
+    return () => {
+      void recorderRef.current?.stop();
+      recorderRef.current = null;
+      playbackRef.current?.stop();
+    };
+  }, []);
 
   // Restaurant facts come from the server so opening hours have one source. Until
   // they arrive the composer stays disabled: the placeholder config closes every
@@ -162,13 +274,15 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   useEffect(() => {
     if (config === null || messages.length > 0 || state.submitted) return;
 
-    pushMessage({
-      role: "assistant",
-      content: hasAnySlot(state)
-        ? "Welcome back. The details you gave me are still here, but the conversation itself is not kept across a refresh, so let us pick up where we left off."
-        : `Hi, I'm ${ASSISTANT_NAME} at ${config.name}. Tell me the date, the time and how many of you, and I'll take it from there.`,
-    });
-  }, [config, messages.length, pushMessage, state]);
+    const opening = hasAnySlot(state)
+      ? "Welcome back. The details you gave me are still here, but the conversation itself is not kept across a refresh, so let us pick up where we left off."
+      : `Hi, I'm ${ASSISTANT_NAME} at ${config.name}. Tell me the date, the time and how many of you, and I'll take it from there.`;
+
+    pushMessage({ role: "assistant", content: opening });
+    // Browsers block audio before a gesture, so on a first visit this may be
+    // silent. The text is already on screen, which is the part that has to work.
+    speakReply(opening);
+  }, [config, messages.length, pushMessage, speakReply, state]);
 
   const confirmBooking = useCallback(
     async (current: ReservationState) => {
@@ -191,13 +305,14 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
             });
             setSuggestions([]);
             setCardDismissed(false);
-            pushMessage({
-              role: "assistant",
-              content:
-                outcome.kind === "already_submitted"
-                  ? "That booking was already submitted, so nothing was created twice."
-                  : `Booked. A receipt is on its way to ${current.email ?? "your email"}.`,
-            });
+            // The only line in the app that is allowed to say the booking exists,
+            // and it runs after the server has accepted it.
+            const receiptLine =
+              outcome.kind === "already_submitted"
+                ? "That booking was already submitted, so nothing was created twice."
+                : `Booked. A receipt is on its way to ${current.email ?? "your email"}.`;
+            pushMessage({ role: "assistant", content: receiptLine });
+            speakReply(receiptLine);
             break;
           }
           case "slot_taken":
@@ -231,7 +346,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
         setSubmitting(false);
       }
     },
-    [pushMessage, commitState, store],
+    [pushMessage, commitState, speakReply, store],
   );
 
   const send = useCallback(
@@ -241,6 +356,11 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
 
       const activeConfig = config ?? PLACEHOLDER_CONFIG;
       const today = localDate();
+      // Captured before the turn, so a spoken "yes" can only book a summary the
+      // customer has already had a chance to see. Without this the model can return
+      // submit on the same turn the last field arrives, and the booking lands while
+      // the card is still animating in.
+      const wasComplete = isComplete(state, activeConfig);
       // History without the new message: the server appends `message` itself, so
       // sending both would duplicate the turn in the prompt.
       const history = messages;
@@ -269,6 +389,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
 
         commitState(merged);
         pushMessage({ role: "assistant", content: response.reply });
+        speakReply(response.reply);
         setAvailability(response.availability);
         setOpenings(response.openings ?? []);
         setSuggestions(
@@ -282,9 +403,10 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
         setPhase("idle");
 
         // Voice mode has no reliable click, so a clear spoken yes is the
-        // confirmation. The summary is already on screen by then, because the card
-        // renders from completeness rather than from this flag.
-        if (response.submit && mode === "voice") {
+        // confirmation, but only for a summary that was already on screen before this
+        // turn. Text mode always books from the card's button, and neither mode lets
+        // the model book on the turn the last field arrives.
+        if (response.submit && mode === "voice" && wasComplete) {
           await confirmBooking(merged);
         }
       } catch (error) {
@@ -298,7 +420,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
         setPhase("error");
       }
     },
-    [pushMessage, commitState, config, confirmBooking, messages, mode, phase, state, store],
+    [pushMessage, commitState, config, confirmBooking, messages, mode, phase, speakReply, state, store],
   );
 
   // The recognizer is built once and reads the latest send through a ref, so a
@@ -330,12 +452,31 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   }, []);
 
   const toggleMic = () => {
+    const recorder = recorderRef.current;
+    // Voice mode prefers the server transcriber, which is the only place an
+    // ElevenLabs key can live. Everything else falls back to the browser's own
+    // recognition, so the microphone is never a dead button.
+    const useServer =
+      mode === "voice" &&
+      speechCaps?.server_stt === true &&
+      recorder?.supported === true;
+
+    if (useServer && recorder) {
+      if (listening || transcribing) {
+        void recorder.stop();
+        return;
+      }
+      setNotice(null);
+      void recorder.start();
+      return;
+    }
+
     const recognizer = recognizerRef.current;
     if (recognizer === null) return;
 
     if (!recognizer.supported) {
       setNotice(
-        "This browser has no speech recognition, so the microphone is unavailable. Typing works the same.",
+        "This browser has no speech recognition and server transcription is not configured, so the microphone is unavailable. Typing works the same.",
       );
       return;
     }
@@ -352,8 +493,9 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   };
 
   const changeMode = (next: AgentMode) => {
+    // Held in component state only. A reload returns to the URL or build default,
+    // which is what the A/B arms are defined by anyway.
     setMode(next);
-    persistMode(next);
   };
 
   const startOver = () => {
@@ -393,12 +535,14 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
         ? "thinking"
         : listening
           ? "listening"
-          : "idle";
+          : speaking
+            ? "speaking"
+            : "idle";
 
   return (
     <div className="flex w-full flex-col gap-6">
       <div className="flex items-start gap-4">
-        <Avatar state={avatarState} />
+        <Avatar state={avatarState} level={level} />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-white/85">{ASSISTANT_NAME}</p>
           <p className="text-xs text-white/40">
@@ -470,11 +614,11 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
           value={draft}
           onChange={setDraft}
           onSend={() => void send(draft)}
-          busy={phase === "sending"}
+          busy={phase === "sending" || transcribing}
           disabled={config === null}
           mode={mode}
           listening={listening}
-          micAvailable={micSupported}
+          micAvailable={micSupported || speechCaps?.server_stt === true}
           onToggleMic={toggleMic}
           suggestions={chips}
           onSuggestion={(message) => void send(message)}
