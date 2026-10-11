@@ -14,6 +14,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -129,6 +130,36 @@ async def synthesize(text: str, settings: Settings) -> SynthesizedAudio | None:
     return await _edge_tts(text, settings)
 
 
+def _safe_filename(name: str | None) -> str:
+    """A filename that cannot edit the request it travels in.
+
+    The name comes from the upload, so it is attacker-chosen, and it is interpolated
+    into a Content-Disposition header. A quote would end the parameter early and a
+    CRLF would start a new header line, which is how a field nobody sent ends up in
+    the request to a third party. The extension is kept because it is what hints at
+    the container; everything else is dropped rather than escaped, since there is no
+    encoding for this that a reader is guaranteed to honour.
+    """
+    base = (name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    kept = "".join(character for character in base if character.isalnum() or character in "._-")
+    return kept[:64] or "utterance.webm"
+
+
+_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+
+
+def _safe_content_type(value: str | None) -> str:
+    """A media type that cannot edit the request either.
+
+    Like the filename this arrives from the upload, and it is interpolated into a
+    header of its own. Anything that is not shaped like `type/subtype` is replaced
+    rather than escaped, and the default is the container the recorder actually
+    produces.
+    """
+    candidate = (value or "").strip()
+    return candidate if _MEDIA_TYPE.match(candidate) else "audio/webm"
+
+
 def _multipart(fields: dict[str, str], filename: str, blob: bytes, content_type: str) -> tuple[bytes, str]:
     boundary = f"----reservation{uuid.uuid4().hex}"
     body = io.BytesIO()
@@ -162,9 +193,9 @@ def _elevenlabs_stt(
             # end up inside slot values if they are left in.
             "tag_audio_events": "false",
         },
-        filename,
+        _safe_filename(filename),
         blob,
-        content_type,
+        _safe_content_type(content_type),
     )
 
     try:
