@@ -104,6 +104,18 @@ def is_valid(
     return False
 
 
+def is_complete(slots: Mapping[str, Any], restaurant: Restaurant) -> bool:
+    """Whether every field the restaurant insists on has a value.
+
+    Mirror of `isComplete` in the browser. It asks about presence only, because
+    `sanitize` has already refused values that are not valid, so a slot that
+    survived it is a slot that can be booked.
+    """
+    return all(
+        slots.get(key) not in (None, "") for key in restaurant.required_slots
+    )
+
+
 def _valid_date(value: Any, *, today: date, restaurant: Restaurant) -> bool:
     parsed = parse_iso_date(value)
     if parsed is None:

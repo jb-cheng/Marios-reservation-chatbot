@@ -181,6 +181,61 @@ def test_a_conflict_never_lets_a_submit_flag_through(client, saturday: date) -> 
     assert body["slots"]["time"] is None
 
 
+CLAIMS_A_BOOKING = ("booked", "confirmed", "all set", "held", "receipt")
+
+
+def test_the_turn_that_completes_the_summary_claims_nothing(client, saturday: date) -> None:
+    """The complaint this suite exists for.
+
+    The summary card is still animating in while this reply is being read, and
+    nothing is written until the customer confirms and /api/submit answers 200. A
+    sentence like "you're booked" in the meantime is a promise the system has not
+    kept, which is exactly what a human in the loop is there to catch.
+    """
+    state = {
+        "date": saturday.isoformat(),
+        "time": "19:00",
+        "party_size": 4,
+        "name": "Jean Ben",
+    }
+
+    body = chat(client, "jean@example.com", state=state).json()
+
+    assert body["slots"]["email"] == "jean@example.com"
+    assert body["submit"] is False, "the last field arriving is not a confirmation"
+    assert body["availability"]["state"] == "available"
+
+    lower = body["reply"].lower()
+    for claim in CLAIMS_A_BOOKING:
+        assert claim not in lower, body["reply"]
+    assert "confirm" in lower or "check" in lower, body["reply"]
+
+
+def test_a_yes_after_the_summary_is_the_confirmation(client, saturday: date) -> None:
+    """The flag the browser is allowed to act on, and it still claims nothing.
+
+    Voice mode has no click, so this is the only path to a booking that does not go
+    through the card's button. It needs the summary already complete, which the
+    browser checks separately with `wasComplete`.
+    """
+    state = {
+        "date": saturday.isoformat(),
+        "time": "19:00",
+        "party_size": 4,
+        "name": "Jean Ben",
+        "email": "jean@example.com",
+    }
+
+    body = chat(client, "yes", state=state).json()
+
+    assert body["submit"] is True
+    assert body["availability"]["state"] == "available"
+
+    lower = body["reply"].lower()
+    for claim in CLAIMS_A_BOOKING:
+        assert claim not in lower, body["reply"]
+
+
 def test_the_agent_can_say_what_is_free(client, saturday: date) -> None:
     """The turn where a date first appears has no openings in its prompt, so the
     server composes this answer from the engine rather than leaving the model to

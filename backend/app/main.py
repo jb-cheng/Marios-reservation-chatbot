@@ -39,9 +39,11 @@ from .floor_plan import LARGEST_TABLE
 from .guardrails import REFUSAL, check_inbound, check_outbound
 from .llm import ChatProvider, agent_output_schema, complete_turn, provider_chain
 from .prompts import (
+    CONFIRM_ASK,
     asks_about_availability,
     conflict_reply,
     openings_reply,
+    redirects_from_the_summary,
     system_prompt,
 )
 from .schemas import (
@@ -60,7 +62,7 @@ from .schemas import (
 )
 from .speech import stt_available, synthesize, transcribe
 from .storage import Store
-from .validate import parse_iso_date, sanitize
+from .validate import is_complete, parse_iso_date, sanitize
 
 logger = logging.getLogger("reservation.api")
 
@@ -254,6 +256,25 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
                 reported_party,
                 cleaned.get("type") or trusted.get("type"),
             )
+
+        # The other half of never claiming a booking is never wandering off before
+        # the customer can make one. Observed on Command A+ with every required field
+        # filled and the message "yes": it asked which seating type they wanted, so
+        # the confirmation the card was waiting for never arrived. Nothing changed on
+        # that turn, so the question was invented, and a deterministic line replaces
+        # it. Left alone when the model did report a confirmation, because then the
+        # reply and the flag have to keep agreeing.
+        if (
+            not outbound.blocked
+            and not changed
+            and not output.submit
+            and redirects_from_the_summary(
+                payload.message,
+                reply,
+                complete=is_complete({**trusted, **cleaned}, restaurant),
+            )
+        ):
+            reply = CONFIRM_ASK
 
         return ChatResponse(
             reply=reply,

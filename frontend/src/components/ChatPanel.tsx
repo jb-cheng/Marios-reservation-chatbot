@@ -27,6 +27,7 @@ import { createRecognizer, isSpeechRecognitionSupported } from "@/speech/stt";
 import type { Recognizer } from "@/speech/stt";
 import { speak } from "@/speech/tts";
 import type { SpeechPlayback } from "@/speech/tts";
+import { isAffirmation } from "@/state/confirmation";
 import { isComplete, mergeSlots } from "@/state/merge";
 import {
   browserStorage,
@@ -402,11 +403,12 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
         );
         setPhase("idle");
 
-        // Voice mode has no reliable click, so a clear spoken yes is the
-        // confirmation, but only for a summary that was already on screen before this
-        // turn. Text mode always books from the card's button, and neither mode lets
-        // the model book on the turn the last field arrives.
-        if (response.submit && mode === "voice" && wasComplete) {
+        // Voice mode has no reliable click, so a spoken yes is the confirmation,
+        // but only for a summary that was already on screen before this turn and
+        // only when the customer's own words are an unambiguous yes. Text mode
+        // always books from the card's button, and neither mode lets the model book
+        // on the turn the last field arrives.
+        if (response.submit && mode === "voice" && wasComplete && isAffirmation(text)) {
           await confirmBooking(merged);
         }
       } catch (error) {

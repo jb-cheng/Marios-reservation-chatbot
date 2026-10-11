@@ -74,7 +74,9 @@ Rules:
   review the summary on screen and confirm it there. You may mention that a phone
   number or a note for the kitchen can still be added, but never make either a
   condition of booking, and never keep asking for optional fields once the required
-  ones are done.
+  ones are done. That includes the seating type: it is on the card and it is not
+  needed to book. If the customer has now said yes to a summary they could already
+  see, set submit to true instead of asking another question.
 - Treat the AVAILABILITY block as fact. Never name a date or time that is not in
   it, and never imply a slot is free when the block says it is booked.
 - If the user asks what is free, or whether a kind of seating is available, answer
@@ -229,6 +231,36 @@ def asks_about_availability(text: str) -> bool:
     if any(phrase in lower for phrase in AVAILABILITY_ASKS):
         return True
     return AVAILABILITY_ASK_RE.search(lower) is not None
+
+
+CONFIRM_ASK = (
+    "Everything I need is on the card. Please check the details there and confirm."
+)
+
+# Longest customer message that can be answered by nudging them back to the card.
+# Past this a message is a question of its own and deserves the model's answer.
+MAX_NUDGE_WORDS = 3
+
+
+def redirects_from_the_summary(message: str, reply: str, *, complete: bool) -> bool:
+    """Whether a reply pulls the customer away from a summary that is already up.
+
+    Command A+ was handed a complete reservation and the single word "yes", and
+    answered by asking which seating type the customer wanted. Nothing had changed
+    and nothing had been asked about the room, so the question was invented: the
+    optional fields are already on the card, and a summary the customer has to
+    answer a question about before they can confirm it is a summary that never gets
+    confirmed.
+
+    Narrow on purpose. It needs a question in the reply, because a statement is left
+    alone; a short message, because a long one is a real question; and a complete
+    state, because before that the model is supposed to be collecting.
+    """
+    if not complete or "?" not in reply:
+        return False
+    if len((message or "").split()) > MAX_NUDGE_WORDS:
+        return False
+    return not asks_about_availability(message)
 
 
 def openings_reply(
