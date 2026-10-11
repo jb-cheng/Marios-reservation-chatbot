@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    /* The node test runner needs Node's ambient module declarations, which the
+       app config does not pull in because the browser build has no business
+       seeing them. */
+    "types": ["node", "vite/client"]
+  },
+  "include": ["tests", "src"]
+}

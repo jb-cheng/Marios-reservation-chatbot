@@ -1,0 +1,77 @@
+{
+  "_comment": [
+    "One table of slot validation cases, asserted by both test suites:",
+    "backend/tests/test_validate_parity.py and frontend/tests/validation-parity.test.ts.",
+    "The rules are deliberately duplicated across languages (the browser protects",
+    "memory, the server protects the queue), and this file is what stops the two",
+    "copies from drifting. A rule that changes in one language fails in the other.",
+    "",
+    "Both sides must use the same restaurant config: open Tuesday to Sunday,",
+    "16:00 to 21:00 last seating, Monday closed, 30 minute grid, 90 day horizon,",
+    "party 1 to 20.",
+    "",
+    "'date' is the context date used when validating a time, not the value under test.",
+    "Values are coerced first (phone stripped to digits, type lowercased, names",
+    "trimmed and whitespace collapsed) and then validated."
+  ],
+  "today": "2026-10-10",
+  "config": {
+    "open": "16:00",
+    "last_seating": "21:00",
+    "closed_weekday": "mon",
+    "slot_minutes": 30,
+    "max_days_ahead": 90,
+    "party_min": 1,
+    "party_max": 20
+  },
+  "cases": [
+    { "key": "date", "value": "2026-10-10", "date": null, "valid": true, "note": "today is bookable" },
+    { "key": "date", "value": "2026-10-09", "date": null, "valid": false, "note": "yesterday" },
+    { "key": "date", "value": "2027-01-08", "date": null, "valid": true, "note": "exactly 90 days out" },
+    { "key": "date", "value": "2027-01-09", "date": null, "valid": false, "note": "91 days out" },
+    { "key": "date", "value": "2026-02-30", "date": null, "valid": false, "note": "not a real calendar day" },
+    { "key": "date", "value": "10/11/2026", "date": null, "valid": false, "note": "wrong format" },
+    { "key": "date", "value": "2026-10-10T19:00:00Z", "date": null, "valid": false, "note": "a timestamp is not a date" },
+
+    { "key": "time", "value": "19:00", "date": "2026-10-10", "valid": true, "note": "Saturday, inside service" },
+    { "key": "time", "value": "16:00", "date": "2026-10-10", "valid": true, "note": "opening time is inclusive" },
+    { "key": "time", "value": "21:00", "date": "2026-10-10", "valid": true, "note": "last seating is inclusive" },
+    { "key": "time", "value": "15:30", "date": "2026-10-10", "valid": false, "note": "before opening" },
+    { "key": "time", "value": "21:30", "date": "2026-10-10", "valid": false, "note": "after last seating" },
+    { "key": "time", "value": "19:07", "date": "2026-10-10", "valid": false, "note": "off the 30 minute grid" },
+    { "key": "time", "value": "19:00", "date": "2026-10-12", "valid": false, "note": "Monday is closed" },
+    { "key": "time", "value": "19:00", "date": null, "valid": true, "note": "no date yet, so hours are deferred" },
+    { "key": "time", "value": "evening", "date": "2026-10-10", "valid": false, "note": "not a time" },
+    { "key": "time", "value": "25:00", "date": "2026-10-10", "valid": false, "note": "hour out of range" },
+
+    { "key": "party_size", "value": 4, "date": null, "valid": true, "note": "ordinary party" },
+    { "key": "party_size", "value": 1, "date": null, "valid": true, "note": "party minimum" },
+    { "key": "party_size", "value": 20, "date": null, "valid": true, "note": "party maximum, even though no table seats 20" },
+    { "key": "party_size", "value": 21, "date": null, "valid": false, "note": "above the maximum" },
+    { "key": "party_size", "value": 0, "date": null, "valid": false, "note": "below the minimum" },
+    { "key": "party_size", "value": 4.5, "date": null, "valid": false, "note": "not an integer" },
+    { "key": "party_size", "value": "4", "date": null, "valid": false, "note": "a numeric string is not a number" },
+
+    { "key": "email", "value": "jb@example.com", "date": null, "valid": true, "note": "ordinary address" },
+    { "key": "email", "value": "not an email", "date": null, "valid": false, "note": "prose, not an address" },
+    { "key": "email", "value": "a@b", "date": null, "valid": false, "note": "no domain suffix" },
+    { "key": "email", "value": "jb@example.com ", "date": null, "valid": true, "note": "trailing space is trimmed by coercion" },
+
+    { "key": "phone", "value": "4169999999", "date": null, "valid": true, "note": "ten digits" },
+    { "key": "phone", "value": "+1 (416) 999-9999", "date": null, "valid": true, "note": "coerced to eleven digits" },
+    { "key": "phone", "value": "416-999", "date": null, "valid": false, "note": "too short once stripped" },
+    { "key": "phone", "value": "call me soon", "date": null, "valid": false, "note": "no digits at all" },
+
+    { "key": "name", "value": "Cheng", "date": null, "valid": true, "note": "ordinary name" },
+    { "key": "name", "value": "  jean   ben  ", "date": null, "valid": true, "note": "coerced to single spaces" },
+    { "key": "name", "value": "", "date": null, "valid": false, "note": "empty" },
+    { "key": "name", "value": "   ", "date": null, "valid": false, "note": "whitespace only" },
+
+    { "key": "special_requests", "value": "birthday", "date": null, "valid": true, "note": "ordinary request" },
+    { "key": "special_requests", "value": "", "date": null, "valid": false, "note": "empty is not a request" },
+
+    { "key": "type", "value": "booth", "date": null, "valid": true, "note": "a real table type" },
+    { "key": "type", "value": "  BOOTH  ", "date": null, "valid": true, "note": "coerced to lowercase" },
+    { "key": "type", "value": "window seat", "date": null, "valid": false, "note": "not a type this restaurant has" }
+  ]
+}
