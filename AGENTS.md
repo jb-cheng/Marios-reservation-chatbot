@@ -98,11 +98,16 @@ Verified against the live APIs, and each one cost a failed call to discover.
 - `tsc` needs a few hundred MB. This machine has exhausted its commit charge before,
   at which point node processes die with "Zone Allocation failed" at around 130MB and
   it looks like a project failure. Check free memory before blaming the build.
-- Uvicorn's reloader exits on a syntax error instead of retrying, so a broken edit
-  leaves a page running against a dead API. `dev.sh` watches for that and takes the
-  frontend down too. If port 8000 is held by a PID that `tasklist` says does not
-  exist, the listening handle was inherited by a surviving child; kill the python
-  processes by start time.
+- `uvicorn --reload` does not reload on this machine. It logs "Reloading..." and keeps
+  the old worker: reproduced with StatReload and with WatchFiles, with and without
+  `--timeout-graceful-shutdown`, and with no client connected at all. A minute later
+  the worker PID is unchanged and still answering with the code from before the edit,
+  so a fix looks like it did nothing. `dev.sh` runs without `--reload`; restart it
+  after a backend change and believe the process list rather than the log.
+- If port 8000 is held by a PID that `tasklist` says does not exist, the listening
+  handle was inherited by a surviving child; kill the python processes by start time.
+  `dev.sh` also takes the frontend down when the API dies, so a page that cannot reach
+  its backend fails loudly instead of quietly.
 - Never commit `backend/.env`, `backend/reservations.db`, `backend/outbox/` or
   `backend/.venv/`. All four are gitignored; do not un-ignore them.
 

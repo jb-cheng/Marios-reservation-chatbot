@@ -35,16 +35,19 @@ cleanup() {
 }
 
 cd "$ROOT/backend"
-# --reload-dir keeps the watcher off .venv, which is thousands of files it has no
-# business rescanning on every change.
-"$PY" -m uvicorn app.main:app --port 8000 --reload --reload-dir app &
+# No --reload. On this machine uvicorn's reloader logs "Reloading..." and then never
+# replaces the worker, with either watcher backend and with or without a
+# graceful-shutdown timeout, so an edit lands on disk while the running server keeps
+# serving the code from before it. That is worse than no reload at all, because
+# nothing looks wrong and every test of the fix tests the old code. Restart this
+# script after a backend change; Vite still picks up frontend changes on its own.
+"$PY" -m uvicorn app.main:app --port 8000 &
 API_PID=$!
 
-# uvicorn's reloader exits on a syntax error rather than retrying, which would
-# otherwise leave the frontend serving a page that silently cannot reach its
-# backend. If the API goes down, take everything down with it so the failure is
-# loud. Polled rather than waited on, because a subshell cannot wait on the
-# parent's jobs.
+# A backend that fails to start, or dies later, would otherwise leave the frontend
+# serving a page that silently cannot reach its API. If the API goes down, take
+# everything down with it so the failure is loud. Polled rather than waited on,
+# because a subshell cannot wait on the parent's jobs.
 (
   while kill -0 "$API_PID" 2>/dev/null; do sleep 2; done
   echo "backend exited, stopping the frontend too" >&2

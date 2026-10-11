@@ -48,9 +48,13 @@ That starts the API on port 8000 and the app on 5173, and Ctrl-C stops both.
 Prefer two terminals? Run these instead, and leave `dev.sh` alone:
 
 ```bash
-cd backend && .venv/Scripts/python.exe -m uvicorn app.main:app --port 8000 --reload --reload-dir app
+cd backend && .venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
 cd frontend && npm run dev
 ```
+
+Restart the backend after changing it. `--reload` looks like it works and is not: on
+this machine the reloader announces a reload and then keeps the old worker, so the
+server serves the code from before the edit.
 
 Open http://localhost:5173/ for the agent and http://localhost:5173/admin for the
 staff queue.
