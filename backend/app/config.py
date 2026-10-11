@@ -197,7 +197,17 @@ def _flag(name: str, default: bool = False) -> bool:
 
 
 def _secret(name: str) -> str | None:
+    """A credential from the environment, tolerant of how it was pasted.
+
+    Copying out of a dashboard or a JSON snippet often brings the quotes along, and a
+    key wrapped in literal quote characters is refused by the provider exactly like a
+    wrong key is. The two cannot be told apart from the error, so the quotes come off
+    here rather than costing a debugging session. Only a matching pair is removed:
+    half a quote is part of the secret.
+    """
     value = os.getenv(name, "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
     return value or None
 
 
