@@ -1,0 +1,374 @@
+"""The system prompt.
+
+Behaviour lives here. Shape does not: the response contract is enforced by the
+provider's structured output schema, so the prompt never has to beg the model for
+JSON, and a malformed answer is a validation failure rather than a parsing
+argument.
+
+The availability block is rendered from the server's own computation and marked as
+fact. That is the mechanism behind "the chatbot is usually correct about timings":
+the model is not recalling opening hours, it is reading them.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date, datetime, timedelta
+
+from .availability import AVAILABLE, NO_TABLE, Opening, SlotStatus
+from .config import Restaurant
+from .floor_plan import LARGEST_TABLE
+from .schemas import SlotValues
+from .validate import parse_iso_date, weekday_name
+
+BEHAVIOUR = """You are a restaurant reservation assistant for {name}.
+
+You maintain a reservation object with these fields, in these exact formats:
+- date: an ISO calendar date, YYYY-MM-DD, for example 2026-10-17
+- time: a 24 hour clock time, HH:MM, on a {slot_minutes} minute grid, for example
+  19:00. Never write 7pm, 7 pm or 7:00pm; write 19:00.
+- party_size: an integer
+- type: one of booth, patio or standard, or null when the customer has no preference
+- name, email, phone, special_requests: text, as the customer gave it. Copy a phone
+  number through as spoken rather than reformatting it.
+
+Leave null any field the customer has not given. Never guess a value, and never
+carry one over from an example in this prompt.
+
+On every turn you receive:
+- the current reservation object
+- the full conversation so far
+- the user's latest message
+- today's date
+- an AVAILABILITY block computed by the restaurant's own booking data
+
+Respond with:
+- reply: what you say to the user
+- slots: the updated reservation object
+- changed: array of slot keys the user explicitly modified this turn
+- submit: boolean, true ONLY when all required slots are filled AND the user has
+  clearly confirmed, for example "yes", "book it", "that works"
+
+Rules:
+- Only fill a slot if the user actually provided that information. Never invent a
+  value, and never carry a value over from an example.
+- When the customer names a weekday or a relative day such as "tomorrow" or "this
+  Saturday", find it in the CALENDAR below and use the date on that row. The first
+  matching row after today is the day they mean. That is a lookup, not a guess, so
+  do not ask them to repeat a day they already gave you. Then say the weekday and
+  the day of the month back in your reply, as in "Saturday the 17th", so a customer
+  can correct a date they can hear rather than one they cannot.
+- If the day they named is marked closed in the CALENDAR, say so and offer the
+  nearest open day. Do not put a closed date in the reservation object.
+- If the user corrects a value, update it and list the key in changed.
+- Ask for one missing field at a time, in this order:
+  date, time, party_size, name, email, phone, special_requests.
+- Treat the AVAILABILITY block as fact. Never name a date or time that is not in
+  it, and never imply a slot is free when the block says it is booked.
+- If the user asks what is free, or whether a kind of seating is available, answer
+  only from the OPENINGS block. It lists every seating time that can still serve
+  them and how many tables of each kind are open at each.
+- Never name a table identifier and never promise a specific table. Which table a
+  party is given is decided when the booking is written, not during the chat.
+- If the requested slot is booked, offer the alternatives the block lists, leave
+  slots unchanged until the user picks one, and do not add the requested time to
+  slots.
+- If the block says no_table, the room cannot seat that party at any time. Say so
+  plainly, offer to have the team call, and do not invent an alternative.
+- If the user asks a general question about the patio, hours, dress code, parking,
+  the menu or cancellations, answer from FACTS below and leave slots unchanged. If
+  FACTS does not cover it, say you will let the team follow up rather than guessing.
+- Refer to seating the way a guest would, as "a booth for four" or "a table on the
+  patio". Table identifiers like B2 are internal and mean nothing to a customer.
+- If you are unsure what the user meant, ask a clarifying question instead of
+  filling a slot.
+- Never submit twice for the same session.
+- Keep replies to one or two sentences. This is a conversation, not a form.
+
+FACTS about the restaurant:
+{facts}
+"""
+
+
+def render_facts(restaurant: Restaurant) -> str:
+    return "\n".join(f"- {value}" for value in restaurant.facts.values())
+
+
+def render_state(slots: SlotValues) -> str:
+    values = slots.model_dump()
+    lines = [
+        f"- {key}: {value!r}" if value is not None else f"- {key}: (empty)"
+        for key, value in values.items()
+    ]
+    return "\n".join(lines)
+
+
+def _with_weekday(iso_date: str) -> str:
+    """A date plus its weekday name, for anywhere the prompt shows a date.
+
+    A live run resolved "this Saturday" to a Sunday. The date was valid and the
+    restaurant was open, so nothing downstream could catch it. Naming the weekday
+    next to every date gives the model a chance to notice its own arithmetic, and
+    the rule below makes it say the weekday back so the customer can too.
+    """
+    parsed = parse_iso_date(iso_date)
+    if parsed is None:
+        return iso_date
+    return f"{iso_date} ({weekday_name(parsed)})"
+
+
+def render_availability(availability: SlotStatus | None) -> str:
+    if availability is None:
+        return (
+            "AVAILABILITY (server computed, treat as fact)\n"
+            "Not evaluated yet: a date, a time and a party size are all needed "
+            "before the room can be checked."
+        )
+
+    header = (
+        f"AVAILABILITY (server computed, treat as fact)\n"
+        f"Requested {_with_weekday(availability.date)} at {availability.time} for "
+        f"{availability.party_size}"
+        + (f", preference {availability.type}" if availability.type else "")
+        + ": "
+    )
+
+    if availability.state == AVAILABLE:
+        return header + f"AVAILABLE.\nDo not mention the table identifier."
+
+    if availability.state == NO_TABLE:
+        return (
+            header
+            + f"NO_TABLE. The largest single table seats {LARGEST_TABLE}, so no "
+            "arrangement of the room serves this party at any time. There are no "
+            "alternatives to offer."
+        )
+
+    if not availability.alternatives:
+        return (
+            header
+            + "BOOKED. Nothing else is free that evening, so do not offer a time."
+        )
+
+    listed = "\n".join(
+        f"  {item.time}, seats {item.seats}, {item.type}"
+        for item in availability.alternatives
+    )
+    return header + "BOOKED.\nFree alternatives, the only times you may offer:\n" + listed
+
+
+def conflict_reply(availability: SlotStatus, restaurant: Restaurant) -> str:
+    """A reply composed from computed facts, used when a turn discovers a conflict.
+
+    The turn on which a customer first names a date and time cannot have had
+    availability in its prompt, because the prompt is built before the model reads
+    the message. Rather than spend a second model call, or let the customer give
+    their name and email before learning the slot is full, the server says the
+    factual thing itself. Every time in this sentence came from the engine, so
+    there is nothing here a model could have invented.
+    """
+    if availability.state == NO_TABLE:
+        return (
+            f"The largest table at {restaurant.name} seats {LARGEST_TABLE}, so I "
+            f"cannot seat a party of {availability.party_size} at one table on "
+            f"{availability.date}. If you would like, the team can call you about "
+            "arranging the room."
+        )
+
+    if not availability.alternatives:
+        return (
+            f"{availability.time} on {availability.date} is fully booked, and "
+            "there is nothing else free that evening for a party of "
+            f"{availability.party_size}. Another date would give us more to work with."
+        )
+
+    offered = ", ".join(item.time for item in availability.alternatives)
+    return (
+        f"{availability.time} on {availability.date} is fully booked. I have "
+        f"{offered} free for {availability.party_size} instead. Which of those "
+        "works for you?"
+    )
+
+
+AVAILABILITY_ASKS = (
+    "what time", "what times", "which time", "what slots", "what's free",
+    "what is free", "anything free", "any tables", "any openings", "any availability",
+    "what do you have", "what's available", "what is available", "what availability",
+    "when are you free", "when is there", "how busy",
+)
+
+# "is a booth available at seven", "do you have a table free".
+AVAILABILITY_ASK_RE = re.compile(
+    r"\b(?:do you have|is|are|have you got)\b.{0,28}\b(?:free|available|open)\b"
+)
+
+
+def asks_about_availability(text: str) -> bool:
+    """Whether a message is asking what the room can offer.
+
+    Distinct from a general question about the restaurant. "Do you have a patio?"
+    is answered from FACTS; "do you have a patio table free at seven?" has to be
+    answered from the engine, because only the engine knows what is held.
+
+    Shared by the server and the deterministic provider so the two cannot disagree
+    about what counts as an availability question.
+    """
+    lower = (text or "").lower()
+    if any(phrase in lower for phrase in AVAILABILITY_ASKS):
+        return True
+    return AVAILABILITY_ASK_RE.search(lower) is not None
+
+
+def openings_reply(
+    day: str,
+    openings_list: tuple[Opening, ...],
+    party_size: int | None,
+    type_: str | None,
+) -> str:
+    """A reply composed from computed openings.
+
+    Used on the turn where the date first appears, which is the one turn that
+    cannot have had openings in its prompt. Every time in this sentence came from
+    the engine, so there is nothing here a model could have invented.
+    """
+    party = f" for {party_size}" if party_size else ""
+
+    if not openings_list:
+        return (
+            f"I have nothing free on {day}{party}"
+            + (f" for a {type_} table" if type_ else "")
+            + ". Another date would give us more to work with."
+        )
+
+    usable = [
+        opening
+        for opening in openings_list
+        if type_ is None or type_ in opening.by_type()
+    ]
+    if not usable:
+        return (
+            f"On {day} I have seatings free{party}, but none of them can give you a "
+            f"{type_} table. I can offer a different kind of seating, or look at "
+            "another date."
+        )
+
+    times = ", ".join(opening.time for opening in usable)
+    detail = f" for a {type_} table" if type_ else party
+    return f"On {day} I have {times} free{detail}. Which one works for you?"
+
+
+def render_openings(
+    day: str, openings_list: tuple[Opening, ...] | None, party_size: int | None
+) -> str | None:
+    """The room's free seatings for one day, as the model is allowed to see them.
+
+    Rendered as counts per seating type rather than table identifiers. The model
+    needs to be able to answer "is a booth free at seven" and "what times do you
+    have", and it must never promise a specific table, because which table a party
+    gets is the engine's decision at submission time.
+    """
+    if openings_list is None:
+        return None
+
+    header = f"OPENINGS for {_with_weekday(day)}" + (
+        f" (party of {party_size})" if party_size else ""
+    )
+
+    if not openings_list:
+        return f"{header}\nNothing free. Do not offer a time on this date."
+
+    lines = []
+    for opening in openings_list:
+        counts = ", ".join(
+            f"{kind} {count}" for kind, count in sorted(opening.by_type().items())
+        )
+        lines.append(f"  {opening.time}: {len(opening.free)} free ({counts})")
+
+    return header + "\n" + "\n".join(lines)
+
+
+def render_calendar(today: date, restaurant: Restaurant, days: int = 14) -> str:
+    """The next two weeks, with weekdays and closed days marked.
+
+    This exists because a live Command A+ run resolved "this Saturday" to 2026-10-12,
+    which is a Monday, while the prompt already stated that today was Sunday the
+    11th. The model had the correct anchor and still got the arithmetic wrong, and
+    because the date was valid and the restaurant open on Sundays, nothing
+    downstream could catch it.
+
+    So dates become a lookup rather than a calculation. Marking closed days here
+    also means "tomorrow" said on a Sunday is refused in the same breath, instead of
+    reaching validation and coming back with a silently dropped time.
+    """
+    lines = []
+    for offset in range(days):
+        day = today + timedelta(days=offset)
+        window = restaurant.open_hours.get(weekday_name(day))
+        hours = "closed" if window is None else f"{window.open} to {window.last_seating}"
+        marker = " (today)" if offset == 0 else ""
+        lines.append(f"  {day.strftime('%a')} {day.isoformat()}{marker}: {hours}")
+
+    return (
+        "CALENDAR (look dates up here, never compute them)\n" + "\n".join(lines)
+    )
+
+
+def system_prompt(
+    *,
+    restaurant: Restaurant,
+    slots: SlotValues,
+    availability: SlotStatus | None,
+    today: date,
+    now: datetime | None = None,
+    availability_note: str | None = None,
+    openings: tuple[Opening, ...] | None = None,
+    openings_date: str | None = None,
+    openings_party: int | None = None,
+) -> str:
+    """Build the system prompt for one turn.
+
+    `availability_note` replaces the default "not evaluated yet" wording when
+    availability could not be computed for a specific reason, such as a time that
+    is not a seating time. Saying "not evaluated" in that case would tell the model
+    the room had not been checked, when the honest answer is that the request was
+    not a real slot.
+    """
+    behaviour = BEHAVIOUR.format(
+        name=restaurant.name,
+        facts=render_facts(restaurant),
+        slot_minutes=restaurant.slot_minutes,
+    )
+    block = render_availability(availability)
+    if availability is None and availability_note:
+        block = f"AVAILABILITY (server computed, treat as fact)\n{availability_note}"
+
+    openings_block = render_openings(
+        openings_date or "", openings, openings_party
+    )
+
+    # The clock is given as well as the date, because "tonight" and "tomorrow
+    # evening" cannot be resolved from a date alone. Relative dates stay the
+    # model's job rather than the server's, since customers phrase them in too many
+    # forms to parse reliably, so it gets the facts it needs to do the arithmetic.
+    moment = now if now is not None else datetime.combine(today, datetime.min.time())
+    clock = (
+        f"Now is {moment.strftime('%A')} {moment.isoformat(timespec='minutes')}, "
+        f"local restaurant time."
+        if now is not None
+        else f"Today is {today.isoformat()} ({today.strftime('%A')})."
+    )
+
+    parts = [
+        behaviour,
+        clock,
+        "",
+        render_calendar(today, restaurant),
+        "",
+        f"CURRENT RESERVATION OBJECT\n{render_state(slots)}",
+        "",
+        block,
+    ]
+    if openings_block:
+        parts += ["", openings_block]
+
+    return "\n".join(parts) + "\n"
