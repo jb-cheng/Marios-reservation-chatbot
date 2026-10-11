@@ -71,6 +71,11 @@ GUARDRAILS_ENABLED=true
 `scripts/list_models.py` prints the model IDs your Cohere account can actually
 deploy, which is worth running before trusting a model name.
 
+Voice mode is `http://localhost:5173/?mode=voice`, or the Voice tab in the page. It
+needs no key: replies are spoken by Edge TTS and the microphone uses the browser's
+own recognition. Set `ELEVENLABS_API_KEY` to move both halves onto ElevenLabs, and
+`/api/speech/capabilities` is what tells the browser which one it has.
+
 Contributors and agents should read [AGENTS.md](AGENTS.md) first: the invariants
 that are load-bearing, the provider limits discovered by failing against the live
 APIs, and this machine's environment traps.
@@ -95,11 +100,14 @@ cd backend && .venv/Scripts/python.exe -m pytest -m live
 ## How a booking flows
 
 1. The browser keeps the slot values in `localStorage` and sends them with every
-   turn. The model returns updated values; the browser validates and merges them,
+   turn. Only those: no transcript and no UI preferences, so a reload restores a
+   half-finished booking without keeping what the customer said or how they were
+   talking. The model returns updated values; the browser validates and merges them,
    and the server never writes to storage.
 2. The server computes what the room can actually seat and hands the model those
    facts, so suggested alternatives are real openings rather than plausible times.
-3. When every required slot is filled the browser shows a summary. Confirming
+3. When every required slot is filled the browser shows a summary and the assistant
+   asks the customer to check it there. It never claims the booking first: confirming
    calls `POST /api/submit`, which re-checks the room, writes a pending row, and
    emails a receipt.
 4. Staff approve or reject from `/admin`. Approving moves the row to the official

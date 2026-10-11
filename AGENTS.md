@@ -79,6 +79,16 @@ Verified against the live APIs, and each one cost a failed call to discover.
 - Measured per structured turn: Groq about 1.8s, Cohere 4.5s to 13.7s. The brief's 3
   second fallback threshold was written before anything was measured and would have
   abandoned most Cohere turns, so the default is 15000ms.
+- ElevenLabs answers a voice id pasted into `ELEVENLABS_API_KEY` with 401
+  `invalid_api_key`. Keys are long `sk_` strings; voice ids are 20 characters of mixed
+  case such as `21m00Tcm4TlvDq8ikWAM`. `/api/speech/capabilities` still advertises the
+  provider in that state because it can only see that a key exists, so both halves
+  degrade at call time instead: synthesis to Edge TTS, and the recorder to browser
+  recognition on the first 502 from `/api/stt`.
+- Edge TTS is an unofficial websocket and it stalls. Observed: the request was
+  accepted, no audio arrived, and the call ran out its timeout. That is why the
+  browser's own speech synthesis sits behind it and why `/api/tts` answers 502 rather
+  than an empty 200.
 
 ## Environment traps
 
@@ -110,10 +120,12 @@ Verified against the live APIs, and each one cost a failed call to discover.
 
 ## Not built yet
 
-- Text to speech. `edge-tts` is installed and the avatar accepts an analyser level,
-  but nothing serves audio yet, so the mouth animation runs on its fallback loop.
-- ElevenLabs Scribe as an STT alternative. Browser speech recognition works; the
-  toggle path needs a backend websocket proxy so the key stays out of the bundle.
 - `scripts/latency.py` and `scripts/seed.py`, both presentation deliverables.
 - Resend email transport is written but unverified, since there is no key. The outbox
   transport is what runs, writing `.eml` files to `backend/outbox/`.
+- ElevenLabs itself is unverified end to end. The key currently in `.env` is rejected,
+  so every observation of the speech layer so far came from the Edge TTS and browser
+  recognition fallbacks. What has been seen working in a browser: `/api/tts` audio
+  decoded into a 5.2s buffer, the analyser reading real waveform from it, the avatar
+  holding `speaking` for the length of the clip, push to talk recording and uploading,
+  and the downgrade to browser recognition after a 502.
