@@ -249,7 +249,10 @@ def load_settings() -> Settings:
             "SAFEGUARD_MODEL", "openai/gpt-oss-safeguard-20b"
         ).strip(),
         resend_api_key=_secret("RESEND_API_KEY"),
-        email_from=os.getenv("EMAIL_FROM", "reservations@marios.example").strip(),
+        # No default sender. A placeholder domain can never verify, and a value that
+        # looks configured is worse than an empty one because it selects a transport
+        # that then fails at call time.
+        email_from=os.getenv("EMAIL_FROM", "").strip(),
         database_path=database_path,
         outbox_dir=outbox_dir,
         tts_voice=os.getenv("TTS_VOICE", "en-US-AriaNeural").strip(),

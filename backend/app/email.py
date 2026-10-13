@@ -6,9 +6,10 @@ would be noise about a decision they never had to wait for. Rejection is the onl
 decision that changes what the customer believes, and it is the only one that
 writes to them.
 
-Without a key the outbox transport renders the same message to a `.eml` file and
-logs the path. The flow is identical either way, so the queue is testable and the
-receipt is screenshottable before any email account exists.
+Two transports behind one interface: Resend for a verified domain, and the outbox,
+which renders the same message to a `.eml` file and logs the path. The flow is
+identical either way, so the queue is testable and the receipt is screenshottable
+before any email account exists.
 """
 
 from __future__ import annotations
@@ -31,6 +32,12 @@ from .storage import Reservation
 logger = logging.getLogger("reservation.email")
 
 RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+# Cloudflare in front of Resend refuses urllib's default `Python-urllib/3.x` client
+# signature with a 403 whose whole body is `error code: 1010`, before Resend sees
+# anything. A valid key and a valid sender then look identical to a bad key, because
+# `send()` returns False either way and the caller discards it.
+USER_AGENT = "marios-reservations/1.0"
 
 
 @dataclass(frozen=True)
@@ -96,6 +103,7 @@ class ResendTransport:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
             },
             method="POST",
         )
@@ -112,7 +120,14 @@ class ResendTransport:
 
 
 def transport_for(settings: Settings) -> EmailTransport:
-    if settings.resend_api_key:
+    """Resend when it is fully configured, otherwise the outbox.
+
+    A key on its own is not enough. Without a sender this used to select Resend and
+    post an empty `from`, which fails at call time exactly the way a bad key does and
+    leaves nothing on disk to read. Requiring both means a half-filled `.env` writes
+    to the outbox instead of failing silently on the wire.
+    """
+    if settings.resend_api_key and settings.email_from:
         return ResendTransport(settings.resend_api_key, settings.email_from)
     return OutboxTransport(settings.outbox_dir)
 
