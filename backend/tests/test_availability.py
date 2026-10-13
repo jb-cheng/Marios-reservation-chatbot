@@ -11,6 +11,7 @@ from app.availability import (
     NotAServiceSlot,
     alternatives,
     choose_table,
+    held_by_type,
     openings,
     service_slots,
     status,
@@ -391,3 +392,49 @@ def test_openings_respect_what_the_queue_already_holds(
 
     assert "19:00" not in [item.time for item in result]
     assert "19:30" in [item.time for item in result]
+
+
+# -- what the room already holds -------------------------------------------
+
+
+def test_held_tables_are_counted_by_seating_type_and_never_named() -> None:
+    assert held_by_type({"B2", "S1", "S5", "P3"}) == {
+        "booth": 1,
+        "standard": 2,
+        "patio": 1,
+    }
+
+
+def test_an_empty_room_holds_nothing() -> None:
+    assert held_by_type(set()) == {}
+
+
+def test_an_available_slot_carries_the_occupancy_it_was_computed_from() -> None:
+    """The engine already read this set to pick a table. Carrying it forward is
+    what lets the model answer "is anybody else booked then" from fact."""
+    resolved = resolve(SATURDAY, "19:00", 3, "booth", occupied=occupying("B2"))
+
+    assert resolved.state == AVAILABLE
+    assert resolved.table_id == "B3"
+    assert resolved.held == {"booth": 1}
+
+
+def test_a_booked_slot_carries_every_table_holding_it() -> None:
+    resolved = resolve(
+        SATURDAY, "19:00", 4, "booth", occupied=occupying("B1", "B2", "B3", "B4")
+    )
+
+    assert resolved.state == BOOKED
+    assert resolved.held == {"booth": 4}
+
+
+def test_no_table_carries_no_occupancy_because_none_was_looked_up() -> None:
+    """A party the room cannot seat at any table returns before occupancy is read,
+    so an empty mapping here means "not checked" and not "nothing is held". The
+    renderer is what has to keep those two apart."""
+    resolved = resolve(
+        SATURDAY, "19:00", LARGEST_TABLE + 1, occupied=occupying("B2", "S1")
+    )
+
+    assert resolved.state == NO_TABLE
+    assert resolved.held == {}

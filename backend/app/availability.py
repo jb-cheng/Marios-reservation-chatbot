@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .config import Restaurant
-from .floor_plan import Table, candidates
+from .floor_plan import TABLES, Table, candidates
 from .validate import format_minutes, minutes_from_midnight, parse_iso_date, weekday_name
 
 OccupiedAt = Callable[[date, str], set[str]]
@@ -51,6 +51,11 @@ class SlotStatus:
     state: str
     table_id: str | None
     alternatives: tuple[Alternative, ...]
+    # Tables held at this time, by seating type. Empty for NO_TABLE means occupancy
+    # was never queried, not that the room is empty, so the renderer omits the line
+    # there rather than reporting a zero. Deliberately absent from `as_dict()`: the
+    # browser's contract is unchanged.
+    held: dict[str, int]
 
     def as_dict(self) -> dict:
         return {
@@ -108,6 +113,20 @@ def choose_table(
         if table.id not in taken:
             return table
     return None
+
+
+def held_by_type(occupied: Iterable[str]) -> dict[str, int]:
+    """How many tables are held at one time, grouped by seating type.
+
+    Counts and never identifiers, because the model is forbidden from naming or
+    promising a table, and a count is what "is anybody else booked then" needs.
+    """
+    taken = set(occupied)
+    counts: dict[str, int] = {}
+    for table in TABLES:
+        if table.id in taken:
+            counts[table.type] = counts.get(table.type, 0) + 1
+    return counts
 
 
 def alternatives(
@@ -234,12 +253,14 @@ def status(
             state=NO_TABLE,
             table_id=None,
             alternatives=(),
+            held={},
         )
 
     if not is_service_slot(day, time, restaurant):
         raise NotAServiceSlot(f"{iso} {time} is not a seating time")
 
-    table = choose_table(party_size, type_, occupied_at(day, time))
+    occupied = occupied_at(day, time)
+    table = choose_table(party_size, type_, occupied)
     if table is not None:
         return SlotStatus(
             date=iso,
@@ -249,6 +270,7 @@ def status(
             state=AVAILABLE,
             table_id=table.id,
             alternatives=(),
+            held=held_by_type(occupied),
         )
 
     return SlotStatus(
@@ -258,6 +280,7 @@ def status(
         type=type_,
         state=BOOKED,
         table_id=None,
+        held=held_by_type(occupied),
         alternatives=alternatives(
             day=day,
             requested=time,

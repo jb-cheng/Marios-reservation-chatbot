@@ -131,6 +131,18 @@ def _with_weekday(iso_date: str) -> str:
     return f"{iso_date} ({weekday_name(parsed)})"
 
 
+def _held_line(held: dict[str, int]) -> str:
+    """Occupancy at the requested time, as counts per seating type.
+
+    Rendered whenever the engine actually looked, including an explicit "none",
+    because a missing line cannot be told apart from an empty room. NO_TABLE never
+    reaches here: that branch answers before occupancy is queried, so printing a
+    count there would state a fact nobody checked.
+    """
+    counts = ", ".join(f"{kind} {count}" for kind, count in sorted(held.items()))
+    return f"Tables already held at this time: {counts or 'none'}."
+
+
 def render_availability(availability: SlotStatus | None) -> str:
     if availability is None:
         return (
@@ -148,7 +160,11 @@ def render_availability(availability: SlotStatus | None) -> str:
     )
 
     if availability.state == AVAILABLE:
-        return header + f"AVAILABLE.\nDo not mention the table identifier."
+        return (
+            header
+            + f"AVAILABLE.\n{_held_line(availability.held)}\n"
+            + "Do not mention the table identifier."
+        )
 
     if availability.state == NO_TABLE:
         return (
@@ -161,14 +177,21 @@ def render_availability(availability: SlotStatus | None) -> str:
     if not availability.alternatives:
         return (
             header
-            + "BOOKED. Nothing else is free that evening, so do not offer a time."
+            + "BOOKED. Nothing else is free that evening, so do not offer a time.\n"
+            + _held_line(availability.held)
         )
 
     listed = "\n".join(
         f"  {item.time}, seats {item.seats}, {item.type}"
         for item in availability.alternatives
     )
-    return header + "BOOKED.\nFree alternatives, the only times you may offer:\n" + listed
+    return (
+        header
+        + "BOOKED.\n"
+        + _held_line(availability.held)
+        + "\nFree alternatives, the only times you may offer:\n"
+        + listed
+    )
 
 
 def conflict_reply(availability: SlotStatus, restaurant: Restaurant) -> str:

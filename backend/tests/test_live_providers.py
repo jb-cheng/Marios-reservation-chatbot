@@ -193,6 +193,7 @@ async def test_cohere_offers_only_the_alternatives_the_engine_computed() -> None
         type=None,
         state="booked",
         table_id=None,
+        held={"standard": 4},
         alternatives=tuple(
             Alternative(time=t, table_id="S2", seats=4, type="standard") for t in offered
         ),
