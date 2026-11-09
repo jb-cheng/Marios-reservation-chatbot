@@ -4,12 +4,6 @@ A voice and text agent that takes a restaurant reservation, keeps the booking
 details in the browser across turns, and hands the result to a staff queue for a
 human decision.
 
-This repo is the agent. The restaurant's own website is built separately and is
-not part of this tree.
-
-The design, including five places where it deliberately departs from the original
-brief, is in [docs/superpowers/specs/2026-10-10-reservation-agent-design.md](docs/superpowers/specs/2026-10-10-reservation-agent-design.md).
-
 ## Layout
 
 ```
