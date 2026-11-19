@@ -60,6 +60,7 @@ export type SpeechHandlers = {
 export type Recognizer = {
   start: () => void;
   stop: () => void;
+  cancel: () => void;
   supported: boolean;
 };
 
@@ -74,14 +75,17 @@ export function createRecognizer(
       supported: false,
       start: () => handlers.onError("Speech recognition is not available here."),
       stop: () => undefined,
+      cancel: () => undefined,
     };
   }
 
   let recognition: RecognitionLike | null = null;
   let stoppedByCaller = false;
+  let generation = 0;
 
   const start = () => {
     if (recognition !== null) return;
+    const current = ++generation;
 
     const instance = new Constructor();
     instance.lang = options.lang ?? "en-CA";
@@ -90,6 +94,7 @@ export function createRecognizer(
     stoppedByCaller = false;
 
     instance.onresult = (event) => {
+      if (current !== generation) return;
       let interim = "";
       let final = "";
 
@@ -104,6 +109,7 @@ export function createRecognizer(
     };
 
     instance.onerror = (event) => {
+      if (current !== generation) return;
       // "no-speech" and "aborted" are ordinary endings of a mic session, not
       // faults worth showing the customer.
       if (event.error === "no-speech" || event.error === "aborted") return;
@@ -111,6 +117,7 @@ export function createRecognizer(
     };
 
     instance.onend = () => {
+      if (current !== generation) return;
       recognition = null;
       if (!stoppedByCaller) handlers.onEnd();
     };
@@ -132,7 +139,13 @@ export function createRecognizer(
     handlers.onEnd();
   };
 
-  return { supported: true, start, stop };
+  const cancel = () => {
+    generation++;
+    recognition?.abort();
+    recognition = null;
+  };
+
+  return { supported: true, start, stop, cancel };
 }
 
 function describeError(error: string): string {

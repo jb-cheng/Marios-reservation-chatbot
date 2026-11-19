@@ -35,6 +35,17 @@ cleanup() {
 }
 
 cd "$ROOT/backend"
+# httpx reads each NO_PROXY entry as a URL, and this machine's list contains
+# [::1]. The brackets make it parse ":1]" as a port, so constructing any client
+# raises InvalidURL and the backend dies before it serves a request. The bare
+# form is accepted and bypasses the same address, so drop the brackets for these
+# processes only rather than editing the machine's environment.
+NO_PROXY="${NO_PROXY-}"
+NO_PROXY="${NO_PROXY//[\[\]]/}"
+no_proxy="${no_proxy-$NO_PROXY}"
+no_proxy="${no_proxy//[\[\]]/}"
+export NO_PROXY no_proxy
+
 # No --reload. On this machine uvicorn's reloader logs "Reloading..." and then never
 # replaces the worker, with either watcher backend and with or without a
 # graceful-shutdown timeout, so an edit lands on disk while the running server keeps

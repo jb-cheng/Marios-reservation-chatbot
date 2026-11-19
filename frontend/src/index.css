@@ -3,8 +3,24 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ---------------------------------------------------------------------------
+   Mario's, Ristorante Italiano.
+
+   Every colour and type size below is read from the team's Figma file
+   (UX Project, node 10:9766), not eyeballed from a screenshot. The room supplies
+   the palette: linen on the table, the deep green of the banquette, the gold of
+   the portrait oval, and the terracotta and olive that come off the host
+   illustration. Semantic tones are pushed out of those same hues so a warning
+   still looks like it belongs to this restaurant.
+
+   Cormorant Garamond carries the display type and Inter the interface, which is
+   what the design specifies.
+   --------------------------------------------------------------------------- */
+
 :root {
-  --radius: 0.625rem;
+  --radius: 0.25rem;
+
+  /* shadcn tokens, still used by the staff queue. */
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -23,6 +39,17 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+
+  /* The Figma navigation band is 100px tall. Anchor jumps clear it. */
+  --nav-height: 100px;
+}
+
+/* The wordmark drops a size on a phone, so the band drops with it. Keeping this
+   in one variable is what stops anchor jumps landing under the header. */
+@media (max-width: 767px) {
+  :root {
+    --nav-height: 76px;
+  }
 }
 
 .dark {
@@ -44,6 +71,49 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+}
+
+@theme {
+  /* Banquette green, the dominant dark. */
+  --color-ink: #242d27;
+  --color-ink-800: #2b352e;
+  --color-ink-700: #364238;
+  --color-ink-600: #414f45;
+  --color-ink-500: #526052;
+  --color-ink-400: #696d63;
+
+  /* Table linen and the paper it is printed on. */
+  --color-linen: #f5f1e8;
+  --color-linen-200: #ece7db;
+  --color-linen-300: #dbd7cc;
+  --color-paper: #fffdf8;
+
+  /* The portrait oval and the candlelight around it. */
+  --color-gold: #b99a61;
+  --color-gold-200: #d2ba8e;
+  --color-gold-100: #e7d9bb;
+
+  /* Creams used on the dark card, taken from the host's jacket. */
+  --color-cream: #f4efe5;
+  --color-cream-dim: #d7dace;
+  --color-cream-bright: #e7e9db;
+
+  /* Accents off the illustration and the wine list. */
+  --color-olive: #6d7a4f;
+  --color-terracotta: #b0522c;
+  --color-wine: #7a2333;
+
+  /* Semantic, mixed from the same family so they read as part of the room. */
+  --color-sage: #4a7048;
+  --color-brass: #8a6817;
+  --color-brick: #a13527;
+  --color-adriatic: #35586b;
+
+  --font-display: "Cormorant Garamond", "Cormorant", Garamond, "Times New Roman", serif;
+  --font-sans: "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
+
+  --shadow-card: 0 1px 0 rgb(36 45 39 / 0.03), 0 30px 70px -50px rgb(36 45 39 / 0.45);
+  --shadow-host: 0 24px 60px -34px rgb(36 45 39 / 0.55);
 }
 
 @theme inline {
@@ -76,7 +146,281 @@
     @apply border-border outline-ring/50;
   }
 
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: calc(var(--nav-height) + 24px);
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--color-linen);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "kern" 1, "liga" 1, "cv05" 1;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: var(--color-gold-200);
+    color: var(--color-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
+  }
+
+  /* Scrollbars in the room's own colours, for both engines. Firefox takes the
+     standard pair and Chromium the pseudo-elements; setting only one leaves the
+     other painting a grey system bar over a cream page. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-linen-300) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-linen-300);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-gold);
+  }
+
+  .on-ink,
+  .on-ink * {
+    scrollbar-color: rgb(210 186 142 / 0.35) transparent;
+  }
+
+  .on-ink::-webkit-scrollbar-thumb,
+  .on-ink *::-webkit-scrollbar-thumb {
+    background-color: rgb(210 186 142 / 0.35);
+  }
+
+  .on-ink::-webkit-scrollbar-thumb:hover,
+  .on-ink *::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(210 186 142 / 0.6);
+  }
+}
+
+@layer components {
+  /* The letterspaced caps that label every region. 10px/15px in the design. */
+  .eyebrow {
+    font-size: 0.625rem;
+    font-weight: 500;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    line-height: 1.5;
+  }
+
+  .display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  /* Paper stock, not a flat fill. One inline SVG tile, fixed and inert, kept
+     low enough that it reads as texture rather than as noise. */
+  .grain::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.14;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  }
+
+  .rule-gold {
+    background-image: linear-gradient(
+      to right,
+      transparent,
+      var(--color-gold-200) 20%,
+      var(--color-gold) 50%,
+      var(--color-gold-200) 80%,
+      transparent
+    );
+  }
+
+  /* The privacy sheet arrives rather than appearing. A dialog is display:none
+     until showModal, so the animation runs on open without any JS timing. */
+  dialog[open] {
+    animation: rise-in 0.32s cubic-bezier(0.22, 0.68, 0.24, 1) both;
+  }
+
+  dialog::backdrop {
+    animation: fade-in 0.32s ease both;
+  }
+}
+
+@layer reservation {
+  .reservation-page { display: flex; flex-direction: column; padding-top: var(--nav-height); }
+  .reservation-main { width: 100%; max-width: 1600px; margin-inline: auto; padding: 24px 20px; }
+  .reservation-hero { margin-bottom: 24px; }
+  .reservation-workspace { display: grid; gap: 20px; min-height: 0; }
+  .reservation-card { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 20px; }
+  .reservation-card-header { padding-bottom: 12px; }
+  .reservation-body { display: grid; min-height: 0; gap: 20px; margin-top: 16px; }
+  .conversation-column { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 12px; }
+  .message-list { max-height: 340px; flex: 1 1 auto; }
+  .message-list > * { flex-shrink: 0; }
+  .receipt-actions { margin-top: 16px; }
+  .host-avatar { width: 150px; }
+
+  @media (max-width: 1023px) {
+    .host-card { display: grid; grid-template-columns: 80px minmax(0, 1fr); column-gap: 16px; padding: 16px; }
+    .host-card > .eyebrow, .host-heading, .host-description { display: none; }
+    .host-portrait { grid-row: 1 / 3; margin: 0; align-self: center; }
+    .host-status { grid-column: 2; text-align: left; }
+    .host-mode { grid-column: 2; padding-top: 6px; }
+    .host-mode > .eyebrow { display: none; }
+    .host-mode > p { margin-top: 6px; }
+  }
+
+  @media (min-width: 1024px) {
+    .reservation-page { height: 100dvh; min-height: 0; }
+    .reservation-main { display: flex; min-height: 0; flex: 1; flex-direction: column; padding: 18px 24px 12px; }
+    .reservation-hero { flex-shrink: 0; margin-bottom: 16px; }
+    .reservation-hero h1 { font-size: 36px; line-height: 40px; }
+    .reservation-hero p { margin-top: 4px; }
+    .reservation-workspace { flex: 1; grid-template-columns: clamp(180px, 19vw, 260px) minmax(0, 1fr); }
+    .reservation-card { padding: 16px; }
+    .reservation-card-header { flex-shrink: 0; }
+    .reservation-body { flex: 1; grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; margin-top: 12px; }
+    .conversation-column { height: 100%; }
+    .message-list { max-height: none; }
+    .conversation-column > :not(.message-list) { flex-shrink: 0; }
+    .evening-panel { height: 100%; min-height: 0; padding: 12px; }
+    .receipt-actions { margin-top: auto; }
+    .receipt-actions > div { margin-top: 0; }
+    .receipt-details { margin-bottom: 12px; }
+    .host-card { min-height: 0; padding: 18px; }
+    .host-portrait { margin-block: 12px; }
+    .host-avatar { width: clamp(100px, 18vh, 180px); }
+    .host-heading { margin-top: 16px; font-size: 28px; line-height: 30px; }
+    .host-description { margin-top: 8px; font-size: 12px; line-height: 18px; }
+    .host-mode { padding-top: 12px; }
+    .pip-deck { gap: 8px; }
+    .pip-choices button { min-height: 36px; padding-block: 4px; }
+  }
+
+  @media (min-width: 1024px) and (max-height: 800px) {
+    .reservation-page { --nav-height: 80px; }
+    .reservation-main { padding-top: 12px; }
+    .reservation-hero { margin-bottom: 12px; }
+    .reservation-hero h1 { font-size: 32px; line-height: 34px; }
+    .host-description { display: none; }
+    .host-avatar { width: 126px; }
+    .receipt-details { row-gap: 8px; }
+    .receipt-actions section { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .receipt-actions section > p { grid-column: 1 / -1; }
+    .receipt-actions section > button { margin: 0; padding-inline: 6px; }
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes candle {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  38% {
+    opacity: 0.72;
+    transform: scale(1.05);
+  }
+  61% {
+    opacity: 0.44;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, -5%, 0) scale(1.1);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes pip-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility animate-rise {
+  animation: rise-in 0.75s cubic-bezier(0.22, 0.68, 0.24, 1) both;
+}
+
+@utility animate-fade {
+  animation: fade-in 1s ease both;
+}
+
+@utility animate-candle {
+  animation: candle 5.5s ease-in-out infinite;
+}
+
+@utility animate-drift {
+  animation: drift 28s ease-in-out infinite;
+}
+
+@utility animate-pip {
+  animation: pip-in 0.34s cubic-bezier(0.22, 0.68, 0.24, 1) both;
+}
+
+/* Respect the setting rather than shipping motion nobody can turn off. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
 }

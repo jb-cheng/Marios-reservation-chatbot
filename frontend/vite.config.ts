@@ -6,6 +6,19 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  appType: 'mpa',
+  build: {
+    rolldownOptions: {
+      input: {
+        reservations: fileURLToPath(new URL('./index.html', import.meta.url)),
+        story: fileURLToPath(new URL('./our-story/index.html', import.meta.url)),
+        menu: fileURLToPath(new URL('./the-menu/index.html', import.meta.url)),
+        experience: fileURLToPath(new URL('./the-experience/index.html', import.meta.url)),
+        chat: fileURLToPath(new URL('./chat.html', import.meta.url)),
+        admin: fileURLToPath(new URL('./admin.html', import.meta.url)),
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

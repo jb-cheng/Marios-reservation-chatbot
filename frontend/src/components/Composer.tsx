@@ -1,14 +1,11 @@
 import type { KeyboardEvent } from "react";
-import { motion } from "framer-motion";
-import { LoaderIcon, Mic, MicOff, SendIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useAutoResizeTextarea } from "@/hooks/use-auto-resize-textarea";
-import type { AgentMode } from "@/config";
+import { ArrowRight, LoaderIcon, Mic, MicOff, Square } from "lucide-react";
 
-export type Suggestion = {
-  label: string;
-  message: string;
-};
+import type { AgentMode } from "@/config";
+import { useAutoResizeTextarea } from "@/hooks/use-auto-resize-textarea";
+import { cn } from "@/lib/utils";
+
+export type Suggestion = { label: string; message: string };
 
 type Props = {
   value: string;
@@ -18,6 +15,7 @@ type Props = {
   disabled: boolean;
   mode: AgentMode;
   listening: boolean;
+  transcribing: boolean;
   micAvailable: boolean;
   onToggleMic: () => void;
   suggestions: Suggestion[];
@@ -25,128 +23,77 @@ type Props = {
   placeholder: string;
 };
 
-export function Composer({
-  value,
-  onChange,
-  onSend,
-  busy,
-  disabled,
-  mode,
-  listening,
-  micAvailable,
-  onToggleMic,
-  suggestions,
-  onSuggestion,
-  placeholder,
-}: Props) {
-  const { textareaRef, adjustHeight } = useAutoResizeTextarea({
-    minHeight: 56,
-    maxHeight: 180,
-  });
-
-  const canSend = value.trim().length > 0 && !busy && !disabled;
+export function Composer({ value, onChange, onSend, busy, disabled, mode, listening,
+  transcribing, micAvailable, onToggleMic, suggestions, onSuggestion, placeholder }: Props) {
+  const { textareaRef, adjustHeight } = useAutoResizeTextarea({ minHeight: 52, maxHeight: 100 });
+  const canSend = value.trim().length > 0 && !busy && !disabled && !listening;
+  const micDisabled = !micAvailable || disabled || (busy && !listening);
+  const micLabel = listening ? "Stop listening" : "Start speaking";
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       if (canSend) onSend();
     }
   };
 
   return (
-    <div className="space-y-3">
+    <div className="composer min-w-0 shrink-0 space-y-2">
       {suggestions.length > 0 && (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2" aria-label="Available alternatives">
+          <span className="eyebrow text-brick">Still free</span>
           {suggestions.map((suggestion) => (
-            <button
-              key={suggestion.label}
-              type="button"
-              disabled={disabled || busy}
+            <button key={suggestion.label} type="button" disabled={disabled || busy}
               onClick={() => onSuggestion(suggestion.message)}
-              className="rounded-full border border-amber-200/25 bg-amber-200/[0.06] px-3 py-1.5 text-xs text-amber-100/85 transition-colors hover:border-amber-200/50 hover:bg-amber-200/[0.12] disabled:opacity-40"
-            >
+              className="min-h-11 rounded-[4px] border border-brick/40 bg-brick/[0.06] px-3 text-[13px] text-brick hover:bg-brick/[0.12] disabled:opacity-40">
               {suggestion.label}
             </button>
           ))}
         </div>
       )}
 
-      <div className="rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-xl">
-        <textarea
-          ref={textareaRef}
-          value={value}
-          disabled={disabled}
-          onChange={(event) => {
-            onChange(event.target.value);
-            adjustHeight();
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          aria-label="Message"
-          rows={1}
-          className={cn(
-            "w-full resize-none bg-transparent px-4 pt-3.5 text-sm text-white/90",
-            "placeholder:text-white/25 focus:outline-none",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-          )}
-        />
-
-        <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onToggleMic}
-              disabled={!micAvailable || disabled}
-              aria-pressed={listening}
-              aria-label={listening ? "Stop listening" : "Start speaking"}
-              title={
-                micAvailable
-                  ? mode === "voice"
-                    ? "Voice input"
-                    : "Voice input is available in either mode"
-                  : "Speech recognition is not supported in this browser"
-              }
-              className={cn(
-                "flex h-9 w-9 items-center justify-center rounded-lg border transition-colors",
-                listening
-                  ? "border-rose-300/40 bg-rose-400/15 text-rose-100"
-                  : "border-white/10 text-white/45 hover:border-white/25 hover:text-white/85",
-                "disabled:cursor-not-allowed disabled:opacity-35",
-              )}
-            >
-              {micAvailable ? (
-                <Mic className="h-4 w-4" />
-              ) : (
-                <MicOff className="h-4 w-4" />
-              )}
-            </button>
-
-            <span className="text-[0.7rem] text-white/30">
-              {listening ? "Listening" : "Enter to send"}
+      {mode === "voice" ? (
+        <div>
+          <button type="button" onClick={onToggleMic} disabled={micDisabled}
+            aria-pressed={listening} aria-label={micLabel}
+            className={cn("voice-composer flex min-h-[112px] w-full flex-col items-center justify-center gap-2 rounded-[4px] border px-4 py-4 transition-colors disabled:cursor-not-allowed",
+              listening ? "border-terracotta bg-terracotta/10 text-terracotta" : "border-gold/60 bg-linen text-ink hover:border-gold hover:bg-linen-200",
+              micDisabled && "opacity-60")}>
+            {busy ? <LoaderIcon className="h-8 w-8 animate-spin" />
+              : !micAvailable ? <MicOff className="h-8 w-8" />
+                : listening ? <Square className="h-8 w-8" /> : <Mic className="h-8 w-8" />}
+            <span className="text-[15px] font-medium">
+              {transcribing ? "Transcribing…" : busy ? "Mario is thinking…" : listening ? "Listening. Tap to finish" : micAvailable ? "Tap to speak" : "Microphone unavailable"}
             </span>
-          </div>
-
-          <motion.button
-            type="button"
-            onClick={onSend}
-            disabled={!canSend}
-            whileTap={{ scale: 0.98 }}
-            className={cn(
-              "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-              canSend
-                ? "bg-amber-100 text-neutral-900 hover:bg-amber-50"
-                : "cursor-not-allowed bg-white/[0.05] text-white/35",
-            )}
-          >
-            {busy ? (
-              <LoaderIcon className="h-4 w-4 animate-[spin_1.6s_linear_infinite]" />
-            ) : (
-              <SendIcon className="h-4 w-4" />
-            )}
-            Send
-          </motion.button>
+            <span className="text-[12px] leading-4">
+              {listening && value ? value : !micAvailable ? "Switch to Text to keep planning." : "Your words appear in the conversation."}
+            </span>
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className={cn("rounded-[4px] border bg-paper", listening ? "border-terracotta" : "border-linen-300 focus-within:border-ink-400")}>
+          <textarea ref={textareaRef} value={value} disabled={disabled || busy || listening}
+            onChange={(event) => { onChange(event.target.value); adjustHeight(); }}
+            onKeyDown={handleKeyDown} placeholder={placeholder} aria-label="Message" rows={1}
+            className="block w-full resize-none bg-transparent px-3.5 py-3 text-[14px] leading-5 text-ink placeholder:text-ink-400 focus:outline-none disabled:opacity-50" />
+          <div className="flex items-center justify-between gap-3 border-t border-linen-300 px-2 py-1.5">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={onToggleMic} disabled={micDisabled}
+                aria-pressed={listening} aria-label={micLabel}
+                title={micAvailable ? "Dictate a message" : "Speech recognition is not supported in this browser"}
+                className={cn("flex h-11 w-11 items-center justify-center rounded-[4px] border transition-colors disabled:opacity-35",
+                  listening ? "border-terracotta text-terracotta" : "border-linen-300 text-ink-400 hover:text-ink")}>
+                {micAvailable ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
+              </button>
+              <span className="text-[11px] text-ink-400">{listening ? "Listening" : "Enter to send"}</span>
+            </div>
+            <button type="button" onClick={onSend} disabled={!canSend}
+              className="flex h-11 items-center gap-2 rounded-[4px] bg-ink px-4 text-[13px] text-linen hover:bg-ink-600 disabled:cursor-not-allowed disabled:bg-linen-200 disabled:text-ink-400">
+              {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />} Send
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

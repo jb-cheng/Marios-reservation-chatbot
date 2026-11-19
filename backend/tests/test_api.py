@@ -71,9 +71,13 @@ def test_a_booking_request_fills_the_slots_it_was_given(client, saturday: date) 
     assert slots["email"] is None, "nothing was said about an email address"
 
 
-def test_acceptance_4_a_message_with_no_slot_information_changes_nothing(client) -> None:
+def test_acceptance_4_a_message_with_no_slot_information_changes_nothing(
+    client, saturday: date
+) -> None:
+    # The fixture, not a literal: `sanitize` drops a past date on the way in, so a
+    # hardcoded evening turns this into a failure the day after it passes.
     state = {
-        "date": "2026-10-11",
+        "date": saturday.isoformat(),
         "time": "19:00",
         "party_size": 4,
         "name": "Jean",

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Mic } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/state/types";
 
@@ -18,17 +19,22 @@ export function MessageList({
   assistantName,
   lastTurnSpoken = false,
 }: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Only this box scrolls. scrollIntoView would walk every ancestor including the
+  // window, so the greeting on load would drag the whole page past the hero down
+  // to the conversation.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    const box = scrollRef.current;
+    if (box !== null) box.scrollTop = box.scrollHeight;
   }, [messages.length, thinking]);
 
   if (messages.length === 0 && !thinking) return null;
 
   return (
     <div
-      className="flex max-h-[46vh] flex-col gap-4 overflow-y-auto px-1 py-2"
+      ref={scrollRef}
+      className="message-list flex min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain pr-1"
       role="log"
       aria-live="polite"
       aria-label="Conversation"
@@ -43,13 +49,11 @@ export function MessageList({
       ))}
 
       {thinking && (
-        <div className="flex items-center gap-2 self-start text-sm text-white/50">
-          <span className="text-white/70">{assistantName}</span>
+        <div className="flex items-center gap-2 self-start rounded-[4px] bg-linen px-4 py-3">
+          <span className="sr-only">{assistantName} is thinking</span>
           <ThinkingDots />
         </div>
       )}
-
-      <div ref={endRef} />
     </div>
   );
 }
@@ -67,30 +71,20 @@ function Bubble({
 
   return (
     <motion.div
-      className={cn("flex flex-col gap-1", fromUser ? "items-end" : "items-start")}
-      initial={{ opacity: 0, y: 6 }}
+      className={cn("flex", fromUser ? "justify-end" : "justify-start")}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
+      transition={{ duration: 0.24, ease: [0.22, 0.68, 0.24, 1] }}
     >
-      <span className="flex items-center gap-1 px-1 text-[0.7rem] text-white/35">
-        {fromUser ? (
-          <>
-            {spoken && <Mic className="h-3 w-3" aria-hidden="true" />}
-            You
-          </>
-        ) : (
-          assistantName
-        )}
-      </span>
       <div
         className={cn(
-          "max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-          fromUser
-            ? "bg-amber-200/90 text-neutral-900"
-            : "border border-white/10 bg-white/[0.04] text-white/85",
+          "flex max-w-[88%] items-start gap-2 rounded-[4px] px-4 py-3 text-[14px] leading-5 whitespace-pre-wrap",
+          fromUser ? "bg-ink text-linen" : "bg-linen text-ink",
         )}
       >
-        {message.content}
+        <span className="sr-only">{fromUser ? "You said" : `${assistantName} said`}:</span>
+        {spoken && <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gold-200" aria-hidden="true" />}
+        <span>{message.content}</span>
       </div>
     </motion.div>
   );
@@ -102,7 +96,7 @@ function ThinkingDots() {
       {[0, 1, 2].map((dot) => (
         <motion.span
           key={dot}
-          className="h-1.5 w-1.5 rounded-full bg-white/70"
+          className="h-1.5 w-1.5 rounded-full bg-ink-400"
           animate={{ opacity: [0.25, 0.9, 0.25] }}
           transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.15 }}
         />

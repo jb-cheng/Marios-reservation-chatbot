@@ -1,26 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 
-import {
-  ApiError,
-  fetchConfig,
-  fetchSpeechCapabilities,
-  postChat,
-  submitReservation,
-} from "@/api/client";
+import { ApiError, fetchSpeechCapabilities, postChat, submitReservation } from "@/api/client";
 import type { SpeechCapabilities } from "@/api/client";
-import { Avatar } from "@/components/Avatar";
 import type { AvatarState } from "@/components/Avatar";
 import { Composer } from "@/components/Composer";
 import type { Suggestion } from "@/components/Composer";
 import { ConfirmCard } from "@/components/ConfirmCard";
+import { EveningPanel } from "@/components/EveningPanel";
+import { HostCard } from "@/components/HostCard";
 import { MessageList } from "@/components/MessageList";
-import {
-  ASSISTANT_NAME,
-  PLACEHOLDER_CONFIG,
-  initialMode,
-} from "@/config";
+import { PipDeck } from "@/components/PipDeck";
+import { ASSISTANT_NAME, PLACEHOLDER_CONFIG, initialMode } from "@/config";
 import type { AgentMode } from "@/config";
+import { useRestaurantConfig } from "@/hooks/use-restaurant-config";
 import { createRecorder } from "@/speech/recorder";
 import type { Recorder } from "@/speech/recorder";
 import { createRecognizer, isSpeechRecognitionSupported } from "@/speech/stt";
@@ -29,90 +22,49 @@ import { speak } from "@/speech/tts";
 import type { SpeechPlayback } from "@/speech/tts";
 import { isAffirmation } from "@/state/confirmation";
 import { isComplete, mergeSlots } from "@/state/merge";
-import {
-  browserStorage,
-  clearDraft,
-  purgeLegacyKeys,
-  readState,
-  toChatPayload,
-  writeState,
-} from "@/state/storage";
+import { detectPipGroups } from "@/state/pips";
+import { STATE_KEY, browserStorage, clearDraft, purgeLegacyKeys, readState, toChatPayload, writeState } from "@/state/storage";
 import type { KVStorage } from "@/state/storage";
-import type {
-  AvailabilityStatus,
-  ChatMessage,
-  Opening,
-  ReservationState,
-  RestaurantConfig,
-  SubmitOutcome,
-} from "@/state/types";
+import type { ChatMessage, Opening, ReservationState, SubmitOutcome } from "@/state/types";
 import { SLOT_KEYS, emptyState } from "@/state/types";
 
 type Phase = "idle" | "sending" | "error";
-
 type Confirmation = { submission_id: string; table_id: string };
 
-/** Local calendar date, not UTC: a customer booking "tonight" at 11pm is not
- *  booking tomorrow. */
 function localDate(): string {
   const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-/**
- * Whether the draft already holds anything. This is how a reload part way through a
- * booking is told apart from a first visit, now that the transcript no longer
- * survives a refresh to make that distinction obvious.
- */
 function hasAnySlot(state: ReservationState): boolean {
   return SLOT_KEYS.some((key) => state[key] !== null);
 }
 
 function describeInvalid(outcome: Extract<SubmitOutcome, { kind: "invalid" }>): string {
   switch (outcome.error) {
-    case "incomplete":
-      return `The booking is still missing ${(outcome.missing ?? []).join(", ")}.`;
-    case "date_invalid":
-      return "That date is not one we can book. Please pick another day.";
-    case "not_a_seating_time":
-      return "That is not a seating time. Please pick a time within our opening hours.";
-    case "party_size_invalid":
-      return "That party size is outside what we can take online.";
-    default:
-      return `The booking was refused (${outcome.error}).`;
+    case "incomplete": return `The booking is still missing ${(outcome.missing ?? []).join(", ")}.`;
+    case "date_invalid": return "That date is not one we can book. Please pick another day.";
+    case "not_a_seating_time": return "That is not a seating time. Please pick a time within our opening hours.";
+    case "party_size_invalid": return "That party size is outside what we can take online.";
+    default: return `The booking was refused (${outcome.error}).`;
   }
 }
 
-/**
- * What to call the voice that just spoke.
- *
- * Named from the provider that answered rather than the one that is configured,
- * because a key the provider rejects still configures ElevenLabs. Without this, voice
- * mode runs on a fallback and looks like it is running on the premium voice, which is
- * the kind of thing that is only discovered during a demonstration.
- */
 const VOICE_LABELS: Record<string, string> = {
   elevenlabs: "ElevenLabs",
   "edge-tts": "Edge TTS, because ElevenLabs did not answer",
   browser: "this browser, because the server produced no audio",
 };
 
-function voiceLabel(provider: string): string {
-  return VOICE_LABELS[provider] ?? provider;
-}
-
 export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
-  const [config, setConfig] = useState<RestaurantConfig | null>(null);
+  const { config, error: configError } = useRestaurantConfig();
   const [state, setState] = useState<ReservationState>(() => readState(store));
+  const [dialog, setDialog] = useState<"resume" | "reset" | null>(() => state.submitted || hasAnySlot(state) ? "resume" : null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
-  const [availability, setAvailability] = useState<AvailabilityStatus | null>(null);
   const [openings, setOpenings] = useState<Opening[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [cardDismissed, setCardDismissed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -126,556 +78,349 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const [lastTurnSpoken, setLastTurnSpoken] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // The latch behind criterion 7 and the brief's "never submit twice". A ref
-  // rather than state, because two rapid clicks can both read a stale false
-  // before either render lands.
   const submittingRef = useRef(false);
+  const conversationRef = useRef(0);
+  const requestRef = useRef<AbortController | null>(null);
+  const audioRequestRef = useRef<AbortController | null>(null);
   const recognizerRef = useRef<Recognizer | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const playbackRef = useRef<SpeechPlayback | null>(null);
+  const modeRef = useRef(mode);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const micSupported = isSpeechRecognitionSupported();
+  const recordingSupported = typeof globalThis.MediaRecorder !== "undefined" && typeof globalThis.navigator?.mediaDevices?.getUserMedia === "function";
 
-  const commitState = useCallback(
-    (next: ReservationState) => {
-      setState(next);
-      writeState(store, next);
-    },
-    [store],
-  );
-
-  /**
-   * The transcript lives in React state only, never in storage. See storage.ts for
-   * the reasoning: it is where the customer's name, email and phone would otherwise
-   * be persisted in plaintext, and the slot object is already everything the agent
-   * needs to carry on without it.
-   */
-  const pushMessage = useCallback((message: ChatMessage) => {
-    setMessages((previous) => [...previous, message]);
-  }, []);
-
-  // Runs once per visit so a transcript left behind by an earlier build is deleted
-  // rather than merely ignored.
-  useEffect(() => {
-    purgeLegacyKeys(store);
+  const commitState = useCallback((next: ReservationState) => {
+    setState(next);
+    writeState(store, next);
   }, [store]);
 
-  // What the server can do for voice mode. Asked rather than inferred, because
-  // whether ElevenLabs is configured is a server-side fact and finding out in the
-  // browser would mean shipping the key.
-  useEffect(() => {
-    let cancelled = false;
-
-    fetchSpeechCapabilities()
-      .then((caps) => {
-        if (!cancelled) setSpeechCaps(caps);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSpeechCaps({
-            elevenlabs: false,
-            tts_provider: "unavailable",
-            server_stt: false,
-          });
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  const pushMessage = useCallback((message: ChatMessage) => {
+    setMessages(previous => [...previous, message]);
   }, []);
 
-  /**
-   * Speak one assistant line, in voice mode only.
-   *
-   * Text mode stays silent on purpose: nobody wants a page reading itself aloud
-   * when they are reading it, and it keeps the API cost out of the path that does
-   * not need it. Any previous line is stopped first, so a fast exchange cannot
-   * leave two replies talking over each other.
-   */
-  const speakReply = useCallback(
-    (text: string) => {
-      if (mode !== "voice") return;
+  const stopAudio = useCallback(() => {
+    audioRequestRef.current?.abort();
+    playbackRef.current?.stop();
+    playbackRef.current = null;
+    setSpeaking(false);
+    setLevel(0);
+  }, []);
 
-      playbackRef.current?.stop();
-      setSpeaking(true);
+  const stopCapture = useCallback(() => {
+    recorderRef.current?.cancel();
+    recognizerRef.current?.cancel();
+    setListening(false);
+    setTranscribing(false);
+  }, []);
 
-      void speak(text, {
-        onLevel: setLevel,
-        onProvider: setVoiceProvider,
-        onEnd: () => {
-          setSpeaking(false);
-          setLevel(0);
-          playbackRef.current = null;
-        },
-        onError: (message) => {
-          setNotice(message);
-          setSpeaking(false);
-        },
-      }).then((playback) => {
-        playbackRef.current = playback;
-      });
-    },
-    [mode],
-  );
+  const speakReply = useCallback((text: string) => {
+    if (modeRef.current !== "voice") return;
+    stopAudio();
+    const controller = new AbortController();
+    audioRequestRef.current = controller;
+    setSpeaking(true);
+    void speak(text, {
+      onLevel: setLevel,
+      onProvider: setVoiceProvider,
+      onEnd: () => { if (!controller.signal.aborted) { setSpeaking(false); setLevel(0); } },
+      onError: message => { if (!controller.signal.aborted) { setNotice(message); setSpeaking(false); } },
+    }, controller.signal).then(playback => {
+      if (controller.signal.aborted) playback.stop();
+      else playbackRef.current = playback;
+    });
+  }, [stopAudio]);
 
-  // Built once. Transcripts are dispatched through sendRef, so a state change
-  // mid-utterance cannot tear down a recording in progress.
+  useEffect(() => { purgeLegacyKeys(store); }, [store]);
+
+  useEffect(() => {
+    let active = true;
+    fetchSpeechCapabilities().then(caps => { if (active) setSpeechCaps(caps); }).catch(() => {
+      if (active) setSpeechCaps({ elevenlabs: false, tts_provider: "unavailable", server_stt: false });
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const element = dialogRef.current;
+    if (!element) return;
+    if (dialog && !element.open) element.showModal();
+    if (!dialog && element.open) element.close();
+  }, [dialog]);
+
+  useEffect(() => {
+    if (config === null || dialog !== null || messages.length > 0 || state.submitted || phase !== "idle") return;
+    const opening = `Hi, I'm ${ASSISTANT_NAME} at ${config.name}. Tell me the date, the time and how many of you, and I'll take it from there.`;
+    pushMessage({ role: "assistant", content: opening });
+    speakReply(opening);
+  }, [config, dialog, messages.length, phase, pushMessage, speakReply, state.submitted]);
+
+  const confirmBooking = useCallback(async (current: ReservationState) => {
+    if (submittingRef.current || current.submitted) return;
+    submittingRef.current = true;
+    const conversation = conversationRef.current;
+    setSubmitting(true);
+    setSubmitError(null);
+    stopCapture();
+    try {
+      const outcome = await submitReservation(store);
+      if (conversation !== conversationRef.current) return;
+      switch (outcome.kind) {
+        case "pending":
+        case "already_submitted": {
+          commitState({ ...current, submitted: true });
+          setConfirmation({ submission_id: outcome.submission_id, table_id: outcome.table_id });
+          setSuggestions([]);
+          const line = outcome.kind === "already_submitted"
+            ? "That booking was already submitted, so nothing was created twice."
+            : `Booked. A receipt is on its way to ${current.email ?? "your email"}.`;
+          pushMessage({ role: "assistant", content: line });
+          speakReply(line);
+          break;
+        }
+        case "slot_taken":
+          setSubmitError("That time was taken while we were talking. Choose one of the available alternatives.");
+          setSuggestions(outcome.alternatives.map(item => ({ label: item.time, message: `Actually, ${item.time} works.` })));
+          break;
+        case "no_table":
+          setSubmitError(`The largest table seats ${outcome.largest_table}. Please call us to arrange a larger party.`);
+          break;
+        case "invalid": setSubmitError(describeInvalid(outcome)); break;
+      }
+    } catch (error) {
+      if (conversation !== conversationRef.current) return;
+      setSubmitError(error instanceof ApiError ? `Could not submit the booking: ${error.message}` : "Could not submit the booking.");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }, [commitState, pushMessage, speakReply, stopCapture, store]);
+
+  const send = useCallback(async (raw: string, spoken = false, current = state, resume = false) => {
+    const text = raw.trim();
+    if (!text || current.submitted || requestRef.current || submittingRef.current || (dialog === "resume" && !resume)) return;
+    const activeConfig = config ?? PLACEHOLDER_CONFIG;
+    const today = localDate();
+    const wasComplete = isComplete(current, activeConfig);
+    const voiceTurn = spoken && modeRef.current === "voice";
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const history = resume ? [] : messages;
+    pushMessage({ role: "user", content: resume ? "Continue my reservation." : text });
+    setDraft("");
+    setNotice(null);
+    setSubmitError(null);
+    setSuggestions([]);
+    setPhase("sending");
+    setLastTurnSpoken(spoken);
+    stopAudio();
+    try {
+      const response = await postChat({ state: toChatPayload(current), messages: history, message: text, current_date: today }, controller.signal);
+      if (controller.signal.aborted) return;
+      // Continuing supplies no new slot values, so it cannot change the saved answers.
+      const merged = resume ? current : mergeSlots(current, response.slots, response.changed, { today, config: activeConfig, date: current.date });
+      const willBook = !resume && voiceTurn && response.submit && modeRef.current === "voice" && wasComplete && isAffirmation(text);
+      commitState(merged);
+      setOpenings(response.openings ?? []);
+      setSuggestions(response.availability?.state === "booked"
+        ? response.availability.alternatives.map(item => ({ label: item.time, message: `Actually, ${item.time} works.` })) : []);
+      if (!willBook) {
+        pushMessage({ role: "assistant", content: response.reply });
+        speakReply(response.reply);
+      }
+      setPhase("idle");
+      if (willBook) await confirmBooking(merged);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      pushMessage({ role: "assistant", content: error instanceof ApiError
+        ? `I could not reach the reservation service (${error.message}). Your details are saved. Please try again.`
+        : "Something went wrong reaching the reservation service. Your details are saved. Please try again." });
+      setPhase("error");
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
+    }
+  }, [commitState, config, confirmBooking, dialog, messages, pushMessage, speakReply, state, stopAudio]);
+
+  const sendRef = useRef(send);
+  useEffect(() => { sendRef.current = send; }, [send]);
+
   useEffect(() => {
     recorderRef.current = createRecorder({
-      onStart: () => {
-        setListening(true);
-        setNotice(null);
-      },
-      onTranscribing: () => {
-        setListening(false);
-        setTranscribing(true);
-      },
-      onStop: () => {
-        setListening(false);
-        setTranscribing(false);
-      },
-      onTranscript: (text) => {
-        setLastTurnSpoken(true);
-        void sendRef.current(text, true);
-      },
-      onError: (message) => {
-        setNotice(message);
-        setListening(false);
-        setTranscribing(false);
-      },
-      // A configured key that the provider rejects looks exactly like no key at
-      // all from out here, so the capability is withdrawn for the rest of the
-      // visit and the next tap goes to the browser's own recognition.
+      onStart: () => { setListening(true); setNotice(null); },
+      onTranscribing: () => { setListening(false); setTranscribing(true); },
+      onStop: () => { setListening(false); setTranscribing(false); },
+      onTranscript: text => { void sendRef.current(text, true); },
+      onError: message => { setNotice(message); setListening(false); setTranscribing(false); },
       onUnavailable: () => {
-        setSpeechCaps((caps) => (caps === null ? caps : { ...caps, server_stt: false }));
-        setNotice(
-          "Server transcription is not responding, so the microphone will use this browser's recognition. Tap it again and say that once more.",
-        );
+        setSpeechCaps(caps => caps === null ? caps : { ...caps, server_stt: false });
+        setNotice("Server transcription is not responding. Tap the microphone again to use this browser's recognition, or switch to Text.");
       },
     });
-
+    recognizerRef.current = createRecognizer({
+      onInterim: setDraft,
+      onFinal: text => { setDraft(""); setListening(false); void sendRef.current(text, true); },
+      onError: message => { setNotice(message); setListening(false); },
+      onEnd: () => setListening(false),
+    });
     return () => {
-      void recorderRef.current?.stop();
-      recorderRef.current = null;
+      conversationRef.current++;
+      recorderRef.current?.cancel();
+      recognizerRef.current?.cancel();
+      requestRef.current?.abort();
+      requestRef.current = null;
+      audioRequestRef.current?.abort();
       playbackRef.current?.stop();
     };
   }, []);
 
-  // Restaurant facts come from the server so opening hours have one source. Until
-  // they arrive the composer stays disabled: the placeholder config closes every
-  // day, which would reject every time a customer typed.
-  useEffect(() => {
-    let cancelled = false;
-
-    fetchConfig()
-      .then((loaded) => {
-        if (!cancelled) setConfig(loaded);
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setNotice(
-          error instanceof ApiError
-            ? "Could not reach the reservation service. Details may not validate."
-            : "Could not load the restaurant details.",
-        );
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // The first thing the customer sees. Gated on the config load so the greeting
-  // names the actual restaurant rather than a fallback, and on an empty transcript
-  // so it is seeded once rather than repeated on every render.
-  //
-  // After a refresh mid-booking the transcript is empty but the slots are not, and
-  // a greeting would then be a lie. Say what actually happened instead, because an
-  // unexplained empty conversation next to a half-filled summary reads as a bug.
-  useEffect(() => {
-    if (config === null || messages.length > 0 || state.submitted) return;
-
-    const opening = hasAnySlot(state)
-      ? "Welcome back. The details you gave me are still here, but the conversation itself is not kept across a refresh, so let us pick up where we left off."
-      : `Hi, I'm ${ASSISTANT_NAME} at ${config.name}. Tell me the date, the time and how many of you, and I'll take it from there.`;
-
-    pushMessage({ role: "assistant", content: opening });
-    // Browsers block audio before a gesture, so on a first visit this may be
-    // silent. The text is already on screen, which is the part that has to work.
-    speakReply(opening);
-  }, [config, messages.length, pushMessage, speakReply, state]);
-
-  const confirmBooking = useCallback(
-    async (current: ReservationState) => {
-      if (submittingRef.current || current.submitted) return;
-
-      submittingRef.current = true;
-      setSubmitting(true);
-      setSubmitError(null);
-
-      try {
-        const outcome = await submitReservation(store);
-
-        switch (outcome.kind) {
-          case "pending":
-          case "already_submitted": {
-            commitState({ ...current, submitted: true });
-            setConfirmation({
-              submission_id: outcome.submission_id,
-              table_id: outcome.table_id,
-            });
-            setSuggestions([]);
-            setCardDismissed(false);
-            // The only line in the app that is allowed to say the booking exists,
-            // and it runs after the server has accepted it.
-            const receiptLine =
-              outcome.kind === "already_submitted"
-                ? "That booking was already submitted, so nothing was created twice."
-                : `Booked. A receipt is on its way to ${current.email ?? "your email"}.`;
-            pushMessage({ role: "assistant", content: receiptLine });
-            speakReply(receiptLine);
-            break;
-          }
-          case "slot_taken":
-            setSubmitError(
-              "That time was taken while we were talking. These are still free:",
-            );
-            setSuggestions(
-              outcome.alternatives.map((item) => ({
-                label: item.time,
-                message: `Actually, ${item.time} works.`,
-              })),
-            );
-            break;
-          case "no_table":
-            setSubmitError(
-              `The largest table in the room seats ${outcome.largest_table}, so we cannot seat that party at one table. Please call us and the team will arrange the room.`,
-            );
-            break;
-          case "invalid":
-            setSubmitError(describeInvalid(outcome));
-            break;
-        }
-      } catch (error) {
-        setSubmitError(
-          error instanceof ApiError
-            ? `Could not submit the booking: ${error.message}`
-            : "Could not submit the booking.",
-        );
-      } finally {
-        submittingRef.current = false;
-        setSubmitting(false);
-      }
-    },
-    [pushMessage, commitState, speakReply, store],
-  );
-
-  const send = useCallback(
-    async (raw: string, spoken = false) => {
-      const text = raw.trim();
-      if (text === "" || state.submitted || phase === "sending") return;
-
-      const activeConfig = config ?? PLACEHOLDER_CONFIG;
-      const today = localDate();
-      // Captured before the turn, so a spoken "yes" can only book a summary the
-      // customer has already had a chance to see. Without this the model can return
-      // submit on the same turn the last field arrives, and the booking lands while
-      // the card is still animating in.
-      const wasComplete = isComplete(state, activeConfig);
-      // History without the new message: the server appends `message` itself, so
-      // sending both would duplicate the turn in the prompt.
-      const history = messages;
-
-      pushMessage({ role: "user", content: text });
-      setDraft("");
-      setNotice(null);
-      setSubmitError(null);
-      setSuggestions([]);
-      setPhase("sending");
-      setLastTurnSpoken(spoken);
-
-      try {
-        const response = await postChat({
-          state: toChatPayload(state),
-          messages: history,
-          message: text,
-          current_date: today,
-        });
-
-        const merged = mergeSlots(state, response.slots, response.changed, {
-          today,
-          config: activeConfig,
-          date: state.date,
-        });
-
-        // Decided before the reply is shown. Voice mode has no reliable click, so a
-        // spoken yes is the confirmation, but only for a summary that was already on
-        // screen before this turn and only when the customer's own words are an
-        // unambiguous yes. Text mode always books from the card's button, and neither
-        // mode lets the model book on the turn the last field arrives.
-        const willBook =
-          response.submit && mode === "voice" && wasComplete && isAffirmation(text);
-
-        commitState(merged);
-        // A turn that books does not also show the model's line. That line was
-        // written before anything existed, so beside the confirmation it is at best
-        // redundant and at worst asks the customer to confirm a booking that is
-        // already made. confirmBooking always reports what happened, including when
-        // the room said no.
-        if (!willBook) {
-          pushMessage({ role: "assistant", content: response.reply });
-          speakReply(response.reply);
-        }
-        setAvailability(response.availability);
-        setOpenings(response.openings ?? []);
-        setSuggestions(
-          response.availability?.state === "booked"
-            ? response.availability.alternatives.map((item) => ({
-                label: item.time,
-                message: `Actually, ${item.time} works.`,
-              }))
-            : [],
-        );
-        setPhase("idle");
-
-        if (willBook) {
-          await confirmBooking(merged);
-        }
-      } catch (error) {
-        pushMessage({
-          role: "assistant",
-          content:
-            error instanceof ApiError
-              ? `I could not reach the reservation service (${error.message}). Your details are saved, so we can pick up where we left off.`
-              : "Something went wrong reaching the reservation service. Your details are saved.",
-        });
-        setPhase("error");
-      }
-    },
-    [pushMessage, commitState, config, confirmBooking, messages, mode, phase, speakReply, state, store],
-  );
-
-  // The recognizer is built once and reads the latest send through a ref, so a
-  // state change mid-utterance cannot tear down an in-flight session.
-  const sendRef = useRef(send);
-  useEffect(() => {
-    sendRef.current = send;
-  }, [send]);
-
-  useEffect(() => {
-    recognizerRef.current = createRecognizer({
-      onInterim: (text) => setDraft(text),
-      onFinal: (text) => {
-        setDraft("");
-        setListening(false);
-        void sendRef.current(text, true);
-      },
-      onError: (message) => {
-        setNotice(message);
-        setListening(false);
-      },
-      onEnd: () => setListening(false),
-    });
-
-    return () => {
-      recognizerRef.current?.stop();
-      recognizerRef.current = null;
-    };
-  }, []);
-
-  const toggleMic = () => {
-    const recorder = recorderRef.current;
-    // Voice mode prefers the server transcriber, which is the only place an
-    // ElevenLabs key can live. Everything else falls back to the browser's own
-    // recognition, so the microphone is never a dead button.
-    const useServer =
-      mode === "voice" &&
-      speechCaps?.server_stt === true &&
-      recorder?.supported === true;
-
-    if (useServer && recorder) {
-      if (listening || transcribing) {
-        void recorder.stop();
-        return;
-      }
-      setNotice(null);
-      void recorder.start();
-      return;
-    }
-
-    const recognizer = recognizerRef.current;
-    if (recognizer === null) return;
-
-    if (!recognizer.supported) {
-      setNotice(
-        "This browser has no speech recognition and server transcription is not configured, so the microphone is unavailable. Typing works the same.",
-      );
-      return;
-    }
-
-    if (listening) {
-      recognizer.stop();
-      setListening(false);
-      return;
-    }
-
-    setNotice(null);
-    recognizer.start();
-    setListening(true);
-  };
-
-  const changeMode = (next: AgentMode) => {
-    // Held in component state only. A reload returns to the URL or build default,
-    // which is what the A/B arms are defined by anyway.
-    setMode(next);
-  };
-
-  const startOver = () => {
-    clearDraft(store);
-    setState(emptyState());
+  const clearConversation = useCallback(() => {
+    conversationRef.current++;
+    requestRef.current?.abort();
+    requestRef.current = null;
+    stopCapture();
+    stopAudio();
+    setDraft("");
     setMessages([]);
-    setAvailability(null);
     setOpenings([]);
     setSuggestions([]);
     setConfirmation(null);
     setSubmitError(null);
-    setCardDismissed(false);
+    setNotice(null);
+    setLastTurnSpoken(false);
     setPhase("idle");
+  }, [stopAudio, stopCapture]);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== STATE_KEY) return;
+      const next = readState(store);
+      clearConversation();
+      setState(next);
+      setDialog(hasAnySlot(next) || next.submitted ? "resume" : null);
+    };
+    globalThis.addEventListener("storage", onStorage);
+    return () => globalThis.removeEventListener("storage", onStorage);
+  }, [clearConversation, store]);
+
+  const toggleMic = () => {
+    if (requestRef.current || submittingRef.current || transcribing || dialog) return;
+    stopAudio();
+    const recorder = recorderRef.current;
+    const useServer = mode === "voice" && speechCaps?.server_stt === true && recorder?.supported;
+    if (useServer && recorder) {
+      if (listening) void recorder.stop();
+      else { setNotice(null); void recorder.start(); }
+    } else if (listening) {
+      recognizerRef.current?.stop();
+      setListening(false);
+    } else {
+      setNotice(null);
+      recognizerRef.current?.start();
+      setListening(micSupported);
+    }
+  };
+
+  const changeMode = (next: AgentMode) => {
+    if (next === mode) return;
+    stopCapture();
+    stopAudio();
+    if (listening) setDraft("");
+    modeRef.current = next;
+    setMode(next);
+  };
+
+  const startOver = () => {
+    if (submittingRef.current) return;
+    clearConversation();
+    clearDraft(store);
+    setState(emptyState());
+    setDialog(null);
+  };
+
+  const continueReservation = () => {
+    if (!config) return;
+    setDialog(null);
+    if (state.submitted) {
+      pushMessage({ role: "assistant", content: "This reservation was already submitted. Your saved booking details are shown here. Start a new reservation if you would like another table; that will not cancel this booking." });
+      return;
+    }
+    const restored = mergeSlots(emptyState(), state, [], { today: localDate(), config, date: null });
+    if (state.date !== null && restored.date === null) restored.time = null;
+    commitState(restored);
+    void send("Continue my reservation using the saved details. Ask for the next missing required detail, or ask me to confirm the summary if those details are complete. Recheck the room before offering times.", false, restored, true);
   };
 
   const activeConfig = config ?? PLACEHOLDER_CONFIG;
   const complete = isComplete(state, activeConfig);
-  const showCard = complete && (!state.submitted || confirmation !== null);
-
-  // Conflict alternatives take precedence, because they answer a question the
-  // customer has already been asked. Otherwise, once a date is known and no time
-  // is chosen, offer the room's real openings, so picking a time is a click on
-  // something the engine says is free rather than a guess that gets refused.
-  const chips: Suggestion[] =
-    suggestions.length > 0
-      ? suggestions
-      : state.date !== null && state.time === null && !state.submitted
-        ? openings.map((opening) => ({
-            label: opening.time,
-            message: `Let's do ${opening.time}.`,
-          }))
-        : [];
-  const avatarState: AvatarState =
-    phase === "error"
-      ? "error"
-      : phase === "sending"
-        ? "thinking"
-        : listening
-          ? "listening"
-          : speaking
-            ? "speaking"
-            : "idle";
+  const busy = phase === "sending" || transcribing || submitting;
+  const lastReply = [...messages].reverse().find(message => message.role === "assistant")?.content ?? null;
+  const pipGroups = suggestions.length ? [] : detectPipGroups({ reply: lastReply, state, config: activeConfig, openings, today: localDate() });
+  const avatarState: AvatarState = phase === "error" ? "error" : busy ? "thinking" : listening ? "listening" : speaking ? "speaking" : "idle";
+  const alert = notice ?? configError;
 
   return (
-    <div className="flex w-full flex-col gap-6">
-      <div className="flex items-start gap-4">
-        <Avatar state={avatarState} level={level} />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-white/85">{ASSISTANT_NAME}</p>
-          <p className="text-xs text-white/40">
-            {state.submitted
-              ? "This booking is confirmed. Start a new request below."
-              : "Reservations, questions about the room, and nothing else."}
-          </p>
-          {mode === "voice" && voiceProvider !== null && (
-            <p className="text-[11px] text-white/30">Voice: {voiceLabel(voiceProvider)}</p>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 p-1">
-          {(["text", "voice"] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => changeMode(option)}
-              aria-pressed={mode === option}
-              className={
-                mode === option
-                  ? "rounded-full bg-amber-100/90 px-3 py-1 text-xs font-medium text-neutral-900"
-                  : "rounded-full px-3 py-1 text-xs text-white/50 transition-colors hover:text-white/85"
-              }
-            >
-              {option === "text" ? "Text" : "Voice"}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <MessageList
-        messages={messages}
-        thinking={phase === "sending"}
-        assistantName={ASSISTANT_NAME}
-        lastTurnSpoken={lastTurnSpoken}
-      />
-
-      {showCard && (
-        <ConfirmCard
-          state={state}
-          availability={availability}
-          submitting={submitting}
-          error={submitError}
-          confirmation={confirmation}
-          onConfirm={() => void confirmBooking(state)}
-          onKeepEditing={() => setCardDismissed(true)}
-        />
-      )}
-
-      {notice && (
-        <p className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-white/60">
-          {notice}
-        </p>
-      )}
-
-      {state.submitted ? (
-        <div className="flex items-center justify-between gap-4 rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-3">
-          <p className="text-xs text-white/45">
-            This session is read-only now that the booking is in the queue.
-          </p>
-          <button
-            type="button"
-            onClick={startOver}
-            className="flex items-center gap-2 rounded-lg border border-white/12 px-3 py-1.5 text-xs text-white/70 transition-colors hover:border-white/25 hover:text-white"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Start a new request
+    <div className="reservation-workspace">
+      <HostCard avatar={avatarState} level={level} mode={mode} onModeChange={changeMode}
+        voiceProvider={mode === "voice" && voiceProvider !== null ? VOICE_LABELS[voiceProvider] ?? voiceProvider : null} />
+      <section aria-label="Plan your reservation" className="reservation-card rounded-md border border-linen-300 bg-paper shadow-card">
+        <header className="reservation-card-header flex items-center justify-between gap-4 border-b border-linen-300">
+          <div>
+            <p className="eyebrow text-ink-400">Your reservation</p>
+            <h2 className="display text-[27px] leading-8 text-ink">Let&rsquo;s plan your visit</h2>
+          </div>
+          <button type="button" disabled={submitting} onClick={() => { stopCapture(); stopAudio(); setDialog("reset"); }}
+            className="flex min-h-11 shrink-0 items-center gap-2 rounded-[4px] px-2 text-[12px] text-ink-400 hover:bg-linen hover:text-ink disabled:opacity-40">
+            <RotateCcw className="h-3.5 w-3.5" /> Start over
           </button>
+        </header>
+        <div className="reservation-body">
+          <div className="conversation-column">
+            <MessageList messages={messages} thinking={phase === "sending"} assistantName={ASSISTANT_NAME} lastTurnSpoken={lastTurnSpoken} />
+            {alert && <p role="status" className="rounded-[4px] border border-brass/35 bg-brass/[0.07] px-3 py-2 text-[12px] leading-4 text-brass">{alert}</p>}
+            {state.submitted ? (
+              <p className="rounded-[4px] border border-linen-300 bg-linen px-4 py-3 text-[12px] leading-5 text-ink-400">This booking has been submitted. Start over to plan another visit.</p>
+            ) : (
+              <>
+                <PipDeck groups={dialog === "resume" ? [] : pipGroups} state={state} busy={busy || listening} disabled={config === null || dialog !== null} onSend={message => void send(message)} />
+                <Composer value={draft} onChange={setDraft} onSend={() => void send(draft)} busy={busy} disabled={config === null || dialog !== null}
+                  mode={mode} listening={listening} transcribing={transcribing}
+                  micAvailable={micSupported || (mode === "voice" && speechCaps?.server_stt === true && recordingSupported)}
+                  onToggleMic={toggleMic} suggestions={suggestions} onSuggestion={message => void send(message)}
+                  placeholder={config === null ? "Loading the restaurant details" : "Tell me in your own words…"} />
+              </>
+            )}
+          </div>
+          <EveningPanel state={state} config={activeConfig} confirmation={confirmation}>
+            {submitError && <p role="alert" className="mb-2 text-[12px] leading-4 text-brick">{submitError}</p>}
+            {complete && !state.submitted && dialog === null && (
+              <ConfirmCard submitting={submitting} disabled={busy || listening || config === null}
+                onConfirm={() => void confirmBooking(state)}
+                onKeepEditing={() => { changeMode("text"); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.focus()); }} />
+            )}
+          </EveningPanel>
         </div>
-      ) : (
-        <Composer
-          value={draft}
-          onChange={setDraft}
-          onSend={() => void send(draft)}
-          busy={phase === "sending" || transcribing}
-          disabled={config === null}
-          mode={mode}
-          listening={listening}
-          micAvailable={micSupported || speechCaps?.server_stt === true}
-          onToggleMic={toggleMic}
-          suggestions={chips}
-          onSuggestion={(message) => void send(message)}
-          placeholder={
-            config === null
-              ? "Loading the restaurant details"
-              : mode === "voice"
-                ? "Tap the microphone and speak, or type"
-                : "Table for four on Saturday at seven, for example"
-          }
-        />
-      )}
-
-      {!state.submitted && cardDismissed && (
-        <button
-          type="button"
-          onClick={() => setCardDismissed(false)}
-          className="self-start text-xs text-white/40 underline decoration-white/20 underline-offset-4 transition-colors hover:text-white/75"
-        >
-          Show the summary again
-        </button>
-      )}
+      </section>
+      <dialog ref={dialogRef} aria-labelledby="reservation-dialog-heading"
+        onCancel={event => { if (dialog === "resume") event.preventDefault(); else setDialog(null); }}
+        className="m-auto w-[min(440px,calc(100vw-2rem))] rounded-md border border-linen-300 bg-paper p-6 text-ink shadow-card backdrop:bg-ink/45 backdrop:backdrop-blur-sm">
+        <p className="eyebrow text-ink-400">Your reservation</p>
+        <h2 id="reservation-dialog-heading" className="display mt-2 text-[30px] leading-9">{dialog === "resume" ? "Continue your reservation?" : "Start a new reservation?"}</h2>
+        <p className="mt-3 text-[14px] leading-6 text-ink-400">
+          {dialog === "resume"
+            ? state.submitted ? "You have a submitted booking saved in this browser. View it or start planning a new visit."
+              : "Your reservation details are saved in this browser. Pick up where you left off, or clear them and start fresh."
+            : "This clears the conversation and saved details so you can start fresh."}
+          {state.submitted && " Starting fresh does not cancel your existing booking."}
+        </p>
+        <div className="mt-6 flex flex-wrap gap-3">
+          <button type="button" disabled={config === null || submitting} onClick={dialog === "resume" ? continueReservation : () => setDialog(null)}
+            className="min-h-11 rounded-[4px] bg-ink px-5 text-[13px] text-linen hover:bg-ink-600 disabled:opacity-40">
+            {dialog === "resume" ? state.submitted ? "View booking" : "Continue" : "Keep planning"}
+          </button>
+          <button type="button" disabled={submitting} onClick={startOver}
+            className="min-h-11 rounded-[4px] border border-linen-300 px-5 text-[13px] hover:bg-linen disabled:opacity-40">Start fresh</button>
+        </div>
+      </dialog>
     </div>
   );
 }

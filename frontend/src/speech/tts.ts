@@ -78,7 +78,9 @@ function browserFallback(text: string, handlers: SpeakHandlers): SpeechPlayback 
 export async function speak(
   text: string,
   handlers: SpeakHandlers,
+  signal?: AbortSignal,
 ): Promise<SpeechPlayback> {
+  if (signal?.aborted) return { stop: () => undefined };
   const trimmed = text.trim();
   if (trimmed === "") {
     handlers.onEnd();
@@ -87,10 +89,12 @@ export async function speak(
 
   let speech: SynthesizedSpeech;
   try {
-    speech = await synthesizeSpeech(trimmed);
+    speech = await synthesizeSpeech(trimmed, signal);
   } catch {
+    if (signal?.aborted) return { stop: () => undefined };
     return browserFallback(trimmed, handlers);
   }
+  if (signal?.aborted) return { stop: () => undefined };
 
   const context = audioContext();
   if (context === null) return browserFallback(trimmed, handlers);
@@ -99,8 +103,10 @@ export async function speak(
   try {
     buffer = await context.decodeAudioData(speech.audio);
   } catch {
+    if (signal?.aborted) return { stop: () => undefined };
     return browserFallback(trimmed, handlers);
   }
+  if (signal?.aborted) return { stop: () => undefined };
 
   // Reported only once the audio has actually decoded, so the label names the voice
   // the customer is hearing rather than the one that was asked for.

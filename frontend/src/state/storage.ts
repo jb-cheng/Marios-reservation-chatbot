@@ -150,10 +150,7 @@ export function purgeLegacyKeys(store: KVStorage): void {
   store.removeItem(LEGACY_MODE_KEY);
 }
 
-/**
- * Clears the draft after the customer acknowledges an approval. The session id
- * survives, because it identifies the browser rather than the conversation.
- */
 export function clearDraft(store: KVStorage): void {
   store.removeItem(STATE_KEY);
+  store.removeItem(SESSION_KEY);
 }

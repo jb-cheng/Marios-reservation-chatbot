@@ -75,8 +75,8 @@ export function fetchConfig(): Promise<RestaurantConfig> {
   return request<RestaurantConfig>("/api/config");
 }
 
-export function postChat(payload: ChatPayload): Promise<TurnResponse> {
-  return request<TurnResponse>("/api/chat", jsonBody(payload));
+export function postChat(payload: ChatPayload, signal?: AbortSignal): Promise<TurnResponse> {
+  return request<TurnResponse>("/api/chat", { ...jsonBody(payload), signal });
 }
 
 export function fetchAvailability(params: {
@@ -215,8 +215,8 @@ export type SynthesizedSpeech = {
 };
 
 /** Audio for one line, decoded by the caller so an analyser can read the samples. */
-export async function synthesizeSpeech(text: string): Promise<SynthesizedSpeech> {
-  const response = await fetch(`${API_BASE}/api/tts`, jsonBody({ text }));
+export async function synthesizeSpeech(text: string, signal?: AbortSignal): Promise<SynthesizedSpeech> {
+  const response = await fetch(`${API_BASE}/api/tts`, { ...jsonBody({ text }), signal });
   if (!response.ok) {
     throw new ApiError(`speech synthesis failed with ${response.status}`, response.status, null);
   }
@@ -227,11 +227,11 @@ export async function synthesizeSpeech(text: string): Promise<SynthesizedSpeech>
 }
 
 /** One recorded utterance, transcribed on the server. */
-export async function transcribeAudio(blob: Blob): Promise<string> {
+export async function transcribeAudio(blob: Blob, signal?: AbortSignal): Promise<string> {
   const form = new FormData();
   form.append("file", blob, "utterance.webm");
 
-  const response = await fetch(`${API_BASE}/api/stt`, { method: "POST", body: form });
+  const response = await fetch(`${API_BASE}/api/stt`, { method: "POST", body: form, signal });
   const text = await response.text();
   const payload: unknown = text === "" ? null : safeParse(text);
 

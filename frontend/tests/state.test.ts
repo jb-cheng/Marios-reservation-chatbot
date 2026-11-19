@@ -392,7 +392,7 @@ test("a garbage stored session id is replaced rather than trusted", () => {
   assert.match(getSessionId(store), /^[0-9a-f-]{36}$/i);
 });
 
-test("clearing the draft leaves the session id alone", () => {
+test("starting over clears the draft and gives the next booking its own session", () => {
   const store = new MemoryStorage();
   const id = getSessionId(store);
   writeState(store, filled());
@@ -401,5 +401,6 @@ test("clearing the draft leaves the session id alone", () => {
 
   assert.equal(store.getItem(STATE_KEY), null);
   assert.deepEqual(readState(store), emptyState());
-  assert.equal(getSessionId(store), id);
+  assert.equal(store.getItem(SESSION_KEY), null);
+  assert.notEqual(getSessionId(store), id);
 });

@@ -6,8 +6,10 @@ Guidance for an agent working in this repository. Read this before changing code
 
 A restaurant reservation agent: a browser conversation that fills a slot object, a
 FastAPI backend that computes what the room can actually seat, and a staff queue
-where a human approves or rejects. The restaurant's own marketing website is built
-elsewhere and is not in this tree.
+where a human approves or rejects. The customer page is the restaurant's whole page:
+the reservation block at the top, then the story, the menu and the room. The teammate
+who owns the marketing site shared a Figma file that holds only the reservation frame,
+so the sections below it are this repo's own design.
 
 The design, including the places it deliberately departs from the original brief,
 is in `docs/superpowers/specs/2026-10-10-reservation-agent-design.md`. That file is
@@ -20,12 +22,28 @@ because a spec that contradicts the code is worse than no spec.
 ./dev.sh                                              # API on 8000, app on 5173
 
 cd frontend && npm run test:state && npm run typecheck
-cd backend  && .venv/Scripts/python.exe -m pytest      # offline, no API calls
+cd backend  && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 .venv/Scripts/python.exe -m pytest
 cd backend  && .venv/Scripts/python.exe -m pytest -m live   # costs real quota
 ```
 
 Use the venv at `backend/.venv`. Never install Python packages globally on this
 machine.
+
+## The customer page
+
+`ChatPage` composes a fixed `SiteHeader`, the reservation block, three marketing
+sections and `SiteFooter`. The reservation block is the Figma frame: `HostCard` at
+352px, the conversation card at 928px, `EveningPanel` at 284px, under a 100px header.
+Those widths are asserted by the browser check, so changing one is a deliberate act.
+
+`ChatPanel` still owns the whole turn flow. `PipDeck` renders quick answers under the
+agent's last question and `EveningPanel` renders the running summary; neither owns
+state. Every restaurant fact on the page comes from `/api/config` through
+`useRestaurantConfig`, which shares one request across all of them.
+
+Browser checks live outside the repo, in `C:/Users/jbnou/pw-scratch/marios-stage{1,2,3}.mjs`,
+run with `node` against the dev servers. They use the cached Playwright Chromium rather
+than adding a dependency here. See the trap below about isolating the database first.
 
 ## Invariants worth not breaking
 
@@ -54,6 +72,15 @@ guarantees.
   Rejection is the only decision that sends an email.
 - Submission is idempotent per session, checked server-side as well as by the
   browser's latch.
+- Quick answers never write a slot. Every chip and field in `PipDeck` ends in the same
+  `send()` the textarea calls, so extraction, the merge rule and `isValid` still apply.
+  A pip that set state directly would be a second write path around all three.
+- `pips.ts` matches asking sentences only, never the whole reply. Otherwise "I have your
+  name as John" puts a name field under a statement. Bare `number` and bare `table` are
+  deliberately not keywords, because "number of guests" and "a table for four" are party
+  questions.
+- `EveningPanel` and `ConfirmCard` read state, never the agent's prose. That is what stops
+  either of them agreeing with a reply that got something wrong.
 
 ## Provider facts learned the hard way
 
@@ -121,6 +148,21 @@ Verified against the live APIs, and each one cost a failed call to discover.
   its backend fails loudly instead of quietly.
 - Never commit `backend/.env`, `backend/reservations.db`, `backend/outbox/` or
   `backend/.venv/`. All four are gitignored; do not un-ignore them.
+- `NO_PROXY` on this machine includes `[::1]`, and httpx parses that as host `[` with
+  port `:1]`. Anything constructing a client dies with
+  `httpx.InvalidURL: Invalid port: ':1]'`, which looks like a code fault and is not one.
+  Probed directly: the bracketed form fails, the bare `::1` is accepted and means the
+  same thing. `dev.sh` strips the brackets for its own processes. `pytest` uses
+  `TestClient`, which is httpx, so run it as
+  `NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 .venv/Scripts/python.exe -m pytest`.
+- A Resend key is present in `backend/.env`, so `/api/health` reports
+  `email_transport: resend` and a submission from the dev server sends real email to
+  whatever address was typed. Before driving the UI with test data, start the API with
+  `RESEND_API_KEY=""`, `DATABASE_PATH` and `OUTBOX_DIR` pointed at a temp directory.
+  `load_dotenv()` does not override an existing empty variable, so this works without
+  touching `.env`. Check `/api/health` says `outbox` before the first submission.
+- Vite here listens on `[::1]:5173`. Use `http://localhost:5173`, not `127.0.0.1:5173`,
+  or a browser check fails to connect and looks like a broken page.
 
 ## Conventions
 
@@ -137,8 +179,10 @@ Verified against the live APIs, and each one cost a failed call to discover.
 ## Not built yet
 
 - `scripts/latency.py` and `scripts/seed.py`, both presentation deliverables.
-- Resend email transport is written but unverified, since there is no key. The outbox
-  transport is what runs, writing `.eml` files to `backend/outbox/`.
+- Resend is written and a key is now loaded, but no message has been sent through it and
+  read on the other side. The outbox transport is what has been observed working, writing
+  `.eml` files. Treat the live transport as unverified, and see the trap above before
+  letting a test reach it.
 - ElevenLabs itself is unverified end to end. The key currently in `.env` is rejected,
   so every observation of the speech layer so far came from the Edge TTS and browser
   recognition fallbacks. The request shapes were checked against the published OpenAPI
