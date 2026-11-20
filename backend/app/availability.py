@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .config import Restaurant
-from .floor_plan import TABLES, Table, candidates
+from .floor_plan import TABLES, Table, candidates, largest_of_type
 from .validate import format_minutes, minutes_from_midnight, parse_iso_date, weekday_name
 
 OccupiedAt = Callable[[date, str], set[str]]
@@ -56,6 +56,11 @@ class SlotStatus:
     # there rather than reporting a zero. Deliberately absent from `as_dict()`: the
     # browser's contract is unchanged.
     held: dict[str, int]
+    # The most guests one table of the requested kind seats, ignoring occupancy.
+    # NO_TABLE has two causes, and this is what tells them apart: a party bigger
+    # than the room, or a party the room can seat but not in the kind asked for.
+    # Absent from `as_dict()` for the same reason as `held`.
+    capacity: int
 
     def as_dict(self) -> dict:
         return {
@@ -254,6 +259,7 @@ def status(
             table_id=None,
             alternatives=(),
             held={},
+            capacity=largest_of_type(type_),
         )
 
     if not is_service_slot(day, time, restaurant):
@@ -271,6 +277,7 @@ def status(
             table_id=table.id,
             alternatives=(),
             held=held_by_type(occupied),
+            capacity=largest_of_type(type_),
         )
 
     return SlotStatus(
@@ -281,6 +288,7 @@ def status(
         state=BOOKED,
         table_id=None,
         held=held_by_type(occupied),
+        capacity=largest_of_type(type_),
         alternatives=alternatives(
             day=day,
             requested=time,

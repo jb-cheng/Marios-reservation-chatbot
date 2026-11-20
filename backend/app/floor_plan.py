@@ -38,6 +38,27 @@ TABLES: tuple[Table, ...] = (
 
 LARGEST_TABLE = max(table.seats for table in TABLES)
 
+
+def largest_of_type(type_: str | None) -> int:
+    """The most guests one table of this kind seats, whoever is booked.
+
+    A requested type is a capacity limit of its own: the room seats eight but no
+    booth seats more than six, and quoting the room's limit for a booth request
+    tells a party of eight they cannot be seated when they can.
+    """
+    return max(
+        table.seats for table in TABLES if type_ is None or table.type == type_
+    )
+
+
+# How a guest would name each kind, for sentences the server composes. "The largest
+# patio seats four" reads as an area rather than a table, so the noun differs.
+TYPE_PHRASE = {
+    "booth": "booth",
+    "patio": "table on the patio",
+    "standard": "standard table",
+}
+
 # When a party has no seating preference, standard tables are offered first.
 # Booths and patio are the seats customers ask for by name, so spending them on
 # someone who did not ask leaves nothing for the guest who did.

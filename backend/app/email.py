@@ -6,18 +6,19 @@ would be noise about a decision they never had to wait for. Rejection is the onl
 decision that changes what the customer believes, and it is the only one that
 writes to them.
 
-Two transports behind one interface: Resend for a verified domain, and the outbox,
-which renders the same message to a `.eml` file and logs the path. The flow is
-identical either way, so the queue is testable and the receipt is screenshottable
+Two transports behind one interface: Mailgun for a verified sending domain, and the
+outbox, which renders the same message to a `.eml` file and logs the path. The flow
+is identical either way, so the queue is testable and the receipt is screenshottable
 before any email account exists.
 """
 
 from __future__ import annotations
 
-import json
+import base64
 import logging
 import textwrap
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,11 +32,10 @@ from .storage import Reservation
 
 logger = logging.getLogger("reservation.email")
 
-RESEND_ENDPOINT = "https://api.resend.com/emails"
+MAILGUN_API_BASE = "https://api.mailgun.net/v3"
 
-# Cloudflare in front of Resend refuses urllib's default `Python-urllib/3.x` client
-# signature with a 403 whose whole body is `error code: 1010`, before Resend sees
-# anything. A valid key and a valid sender then look identical to a bad key, because
+# An edge filter that refuses urllib's default `Python-urllib/3.x` signature answers
+# before the API sees anything, and that is indistinguishable from a bad key because
 # `send()` returns False either way and the caller discards it.
 USER_AGENT = "marios-reservations/1.0"
 
@@ -80,29 +80,34 @@ class OutboxTransport:
             return False
 
 
-class ResendTransport:
-    name = "resend"
+class MailgunTransport:
+    name = "mailgun"
 
-    def __init__(self, api_key: str, sender: str) -> None:
+    def __init__(self, api_key: str, domain: str, sender: str) -> None:
         self.api_key = api_key
+        self.domain = domain
         self.sender = sender
 
     def send(self, message: EmailMessage) -> bool:
-        payload = json.dumps(
+        payload = urllib.parse.urlencode(
             {
                 "from": self.sender,
-                "to": [message.to],
+                "to": message.to,
                 "subject": message.subject,
                 "text": message.text,
             }
         ).encode("utf-8")
 
+        # Mailgun authenticates with HTTP Basic, where the username is the literal
+        # `api` and the password is the key. A Bearer header is refused.
+        credentials = base64.b64encode(f"api:{self.api_key}".encode("utf-8")).decode("ascii")
+
         request = urllib.request.Request(
-            RESEND_ENDPOINT,
+            f"{MAILGUN_API_BASE}/{self.domain}/messages",
             data=payload,
             headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": USER_AGENT,
             },
             method="POST",
@@ -112,23 +117,26 @@ class ResendTransport:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return 200 <= response.status < 300
         except urllib.error.HTTPError as error:
-            logger.error("resend rejected the message: %s %s", error.code, error.reason)
+            logger.error("mailgun rejected the message: %s %s", error.code, error.reason)
             return False
         except (urllib.error.URLError, TimeoutError):
-            logger.exception("could not reach resend")
+            logger.exception("could not reach mailgun")
             return False
 
 
 def transport_for(settings: Settings) -> EmailTransport:
-    """Resend when it is fully configured, otherwise the outbox.
+    """Mailgun when it is fully configured, otherwise the outbox.
 
-    A key on its own is not enough. Without a sender this used to select Resend and
-    post an empty `from`, which fails at call time exactly the way a bad key does and
-    leaves nothing on disk to read. Requiring both means a half-filled `.env` writes
-    to the outbox instead of failing silently on the wire.
+    Three values, not one. The sending domain is a path segment of the URL, so a key
+    on its own cannot address the API, and without a sender the request would post an
+    empty `from`. Either gap fails at call time exactly the way a bad key does and
+    leaves nothing on disk to read, so a half-filled `.env` writes to the outbox
+    instead of failing silently on the wire.
     """
-    if settings.resend_api_key and settings.email_from:
-        return ResendTransport(settings.resend_api_key, settings.email_from)
+    if settings.mailgun_api_key and settings.mailgun_domain and settings.email_from:
+        return MailgunTransport(
+            settings.mailgun_api_key, settings.mailgun_domain, settings.email_from
+        )
     return OutboxTransport(settings.outbox_dir)
 
 

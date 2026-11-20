@@ -26,7 +26,7 @@ def shared() -> dict:
 def settings(tmp_path: Path) -> Settings:
     """Settings pointed at a throwaway database and outbox.
 
-    `resend_api_key` and `elevenlabs_api_key` are forced to None so a key present in
+    `mailgun_api_key` and `elevenlabs_api_key` are forced to None so a key present in
     the developer's real environment cannot make a test send an actual email or
     spend speech quota. Tests that need a key set a fake one and replace the
     provider call itself.
@@ -39,7 +39,8 @@ def settings(tmp_path: Path) -> Settings:
         llm_provider="fake",
         guardrails_enabled=False,
         safeguard_enabled=False,
-        resend_api_key=None,
+        mailgun_api_key=None,
+        mailgun_domain="",
         elevenlabs_api_key=None,
     )
 

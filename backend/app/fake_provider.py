@@ -21,8 +21,7 @@ from typing import Any
 
 from .availability import BOOKED, NO_TABLE, Opening, SlotStatus
 from .config import Restaurant
-from .floor_plan import LARGEST_TABLE
-from .prompts import asks_about_availability
+from .prompts import asks_about_availability, conflict_reply
 from .schemas import AgentOutput, ChatMessage, SlotValues
 from .validate import minutes_from_midnight, parse_iso_date
 
@@ -462,11 +461,7 @@ class FakeProvider:
         parts: list[str] = []
 
         if availability is not None and availability.state == NO_TABLE:
-            parts.append(
-                f"The largest table in the room seats {LARGEST_TABLE}, "
-                f"so I cannot seat a party of {slots.get('party_size')} at one table. "
-                "If you would like, the team can call you about arranging the room."
-            )
+            parts.append(conflict_reply(availability, self.restaurant))
             return " ".join(parts)
 
         if availability is not None and availability.state == BOOKED:

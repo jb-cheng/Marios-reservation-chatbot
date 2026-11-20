@@ -178,7 +178,8 @@ class Settings:
     guardrails_model: str
     safeguard_enabled: bool
     safeguard_model: str
-    resend_api_key: str | None
+    mailgun_api_key: str | None
+    mailgun_domain: str
     email_from: str
     database_path: Path
     outbox_dir: Path
@@ -248,7 +249,10 @@ def load_settings() -> Settings:
         safeguard_model=os.getenv(
             "SAFEGUARD_MODEL", "openai/gpt-oss-safeguard-20b"
         ).strip(),
-        resend_api_key=_secret("RESEND_API_KEY"),
+        mailgun_api_key=_secret("MAILGUN_API_KEY"),
+        # Part of the sending URL rather than something the key implies, so it cannot
+        # be defaulted or derived.
+        mailgun_domain=os.getenv("MAILGUN_DOMAIN", "").strip(),
         # No default sender. A placeholder domain can never verify, and a value that
         # looks configured is worse than an empty one because it selects a transport
         # that then fails at call time.

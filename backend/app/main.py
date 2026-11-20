@@ -42,6 +42,7 @@ from .prompts import (
     CONFIRM_ASK,
     NOT_BOOKED_YET,
     asks_about_availability,
+    available_reply,
     claims_a_booking,
     conflict_reply,
     openings_reply,
@@ -218,23 +219,44 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         changed = [key for key in output.changed if key in SLOT_KEYS]
         reported = computed
 
-        # A turn that first learns the date and time cannot have had availability in
-        # its prompt, because the prompt is built before the model reads the message.
-        # Resolve the room against what the model just extracted, so the customer
-        # hears "that time is full" now instead of after handing over an email
-        # address.
-        if reported is None and not outbound.blocked:
+        # The prompt's availability describes the draft as it stood before this
+        # message, because the prompt is built before the model reads it. So it is
+        # missing on a turn that first learns the date and time, and stale on a turn
+        # that changes the party, the time or the seating kind. Either way the room
+        # has to be resolved again against what the model just extracted, or the
+        # customer hears an answer about a draft they no longer have.
+        if not outbound.blocked and (
+            reported is None
+            or any(key in changed for key in ("date", "time", "party_size", "type"))
+        ):
             discovered, _ = _resolve_availability(
                 {**trusted, **cleaned}, today, services
             )
-            if discovered is not None and discovered.state in (BOOKED, NO_TABLE):
+            if discovered is not None:
                 reported = discovered
-                reply = conflict_reply(discovered, restaurant)
-                # A time the room cannot honour is never stored. Dropping it here
-                # rather than trusting the model to omit it is what makes that
-                # guarantee hold for every provider, including a disobedient one.
-                cleaned.pop("time", None)
-                changed = [key for key in changed if key != "time"]
+                if discovered.state == AVAILABLE:
+                    # Appended, so whatever the model asked for next survives. The
+                    # exception is a prompt that said the room could not serve this
+                    # draft: the model's reply then argues with the new answer, so
+                    # the answer replaces it rather than following it.
+                    answer = available_reply(discovered)
+                    reply = (
+                        answer
+                        if computed is not None and computed.state != AVAILABLE
+                        else f"{reply} {answer}"
+                    )
+                else:
+                    reply = conflict_reply(discovered, restaurant)
+                    if discovered.state == BOOKED:
+                        # A time the room cannot honour is never stored. Dropping it
+                        # here rather than trusting the model to omit it is what makes
+                        # that guarantee hold for every provider, including a
+                        # disobedient one. NO_TABLE is not that case: the party or the
+                        # seating kind is what cannot be served, at every time, so the
+                        # time the customer gave is innocent and deleting it leaves the
+                        # next turn nothing to check.
+                        cleaned.pop("time", None)
+                        changed = [key for key in changed if key != "time"]
 
         # Openings are resolved against the merged slots too, so the turn where a
         # date first appears can still answer "what do you have free that evening".

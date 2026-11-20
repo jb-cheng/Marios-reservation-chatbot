@@ -59,6 +59,16 @@ guarantees.
   the exact key set, so a new persisted field fails the suite.
 - Availability is computed, never recalled. Every time the agent offers comes from
   `availability.py`. If you find yourself letting a model name a time, stop.
+- The prompt's availability block describes the draft from *before* the customer's
+  message, so it is missing or stale on any turn that changes date, time, party or
+  type. `/api/chat` re-resolves and states the answer itself on those turns. A reply
+  that promises to check is never the last word.
+- `no_table` has two causes: the room cannot seat the party, or the requested seating
+  type cannot. `SlotStatus.capacity` is the largest table of the requested kind, and
+  the wording must name whichever limit binds. No booth seats more than 6, so "the
+  largest table seats 8, so I cannot seat 8" is the bug, not the answer.
+- A `booked` turn drops `time`; a `no_table` turn keeps it. The time is only the
+  problem when that seating is full.
 - Merge rule: a non-empty slot changes only when the model lists it in `changed`.
   Fill-only breaks corrections; blind overwrite lets a hallucination destroy an
   earlier answer.
@@ -155,12 +165,14 @@ Verified against the live APIs, and each one cost a failed call to discover.
   same thing. `dev.sh` strips the brackets for its own processes. `pytest` uses
   `TestClient`, which is httpx, so run it as
   `NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 .venv/Scripts/python.exe -m pytest`.
-- A Resend key is present in `backend/.env`, so `/api/health` reports
-  `email_transport: resend` and a submission from the dev server sends real email to
-  whatever address was typed. Before driving the UI with test data, start the API with
-  `RESEND_API_KEY=""`, `DATABASE_PATH` and `OUTBOX_DIR` pointed at a temp directory.
-  `load_dotenv()` does not override an existing empty variable, so this works without
-  touching `.env`. Check `/api/health` says `outbox` before the first submission.
+- Mailgun is live in `backend/.env`: the key, the sandbox domain and `EMAIL_FROM` are all
+  filled, so `/api/health` reports `email_transport: mailgun` and a submission from the
+  dev server sends real email. The sandbox delivers only to its authorized recipients
+  and refuses every other address, so a test booking to a made-up address produces a
+  successful reservation and no receipt. Before driving the UI with test data, start the
+  API with `MAILGUN_API_KEY=""`, `DATABASE_PATH` and `OUTBOX_DIR` pointed at a temp
+  directory. `load_dotenv()` does not override an existing empty variable, so this works
+  without touching `.env`. Check `/api/health` says `outbox` before the first submission.
 - Vite here listens on `[::1]:5173`. Use `http://localhost:5173`, not `127.0.0.1:5173`,
   or a browser check fails to connect and looks like a broken page.
 
@@ -179,10 +191,17 @@ Verified against the live APIs, and each one cost a failed call to discover.
 ## Not built yet
 
 - `scripts/latency.py` and `scripts/seed.py`, both presentation deliverables.
-- Resend is written and a key is now loaded, but no message has been sent through it and
-  read on the other side. The outbox transport is what has been observed working, writing
-  `.eml` files. Treat the live transport as unverified, and see the trap above before
-  letting a test reach it.
+- Mailgun auth is verified, delivery is not. `GET /v3/domains` answers 200 and lists the
+  sandbox domain as `active`, and `GET /v5/sandbox/auth_recipients` lists one activated
+  recipient, so the key, the domain and the sender are known good. No message has been
+  sent through `POST /v3/<domain>/messages` and read on the other side, and the outbox
+  transport is what has been observed working end to end, writing `.eml` files. The
+  request shape was checked against Mailgun's published API reference and their own
+  Python example: HTTP Basic with the literal username `api`, and
+  `from`/`to`/`subject`/`text` as form fields rather than JSON. The authorized recipients
+  list lives under `/v5`; the `/v3` path answers 404. A sandbox domain only delivers to
+  its five authorized recipients, and only after each accepts the invitation, so a
+  verified domain is what mails a real customer.
 - ElevenLabs itself is unverified end to end. The key currently in `.env` is rejected,
   so every observation of the speech layer so far came from the Edge TTS and browser
   recognition fallbacks. The request shapes were checked against the published OpenAPI

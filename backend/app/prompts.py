@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 
 from .availability import AVAILABLE, NO_TABLE, Opening, SlotStatus
 from .config import Restaurant
-from .floor_plan import LARGEST_TABLE
+from .floor_plan import LARGEST_TABLE, TYPE_PHRASE
 from .schemas import SlotValues
 from .validate import parse_iso_date, weekday_name
 
@@ -167,9 +167,20 @@ def render_availability(availability: SlotStatus | None) -> str:
         )
 
     if availability.state == NO_TABLE:
+        kind = availability.type
+        if kind and availability.party_size <= LARGEST_TABLE:
+            phrase = TYPE_PHRASE.get(kind, kind)
+            return (
+                header
+                + f"NO_TABLE. The largest {phrase} seats {availability.capacity}, so "
+                f"no {phrase} serves this party at any time. The room does seat "
+                f"{availability.party_size} at another kind of table, and a {phrase} "
+                f"seats up to {availability.capacity}. Offer those two, and do not "
+                "offer another time: no time changes this."
+            )
         return (
             header
-            + f"NO_TABLE. The largest single table seats {LARGEST_TABLE}, so no "
+            + f"NO_TABLE. The largest single table seats {availability.capacity}, so no "
             "arrangement of the room serves this party at any time. There are no "
             "alternatives to offer."
         )
@@ -205,8 +216,18 @@ def conflict_reply(availability: SlotStatus, restaurant: Restaurant) -> str:
     there is nothing here a model could have invented.
     """
     if availability.state == NO_TABLE:
+        kind = availability.type
+        if kind and availability.party_size <= LARGEST_TABLE:
+            phrase = TYPE_PHRASE.get(kind, kind)
+            return (
+                f"The largest {phrase} at {restaurant.name} seats "
+                f"{availability.capacity}, so I cannot seat {availability.party_size} "
+                f"in one. I can seat {availability.party_size} at a different kind of "
+                f"table, or keep the {phrase} for up to {availability.capacity}. "
+                "Which would you rather?"
+            )
         return (
-            f"The largest table at {restaurant.name} seats {LARGEST_TABLE}, so I "
+            f"The largest table at {restaurant.name} seats {availability.capacity}, so I "
             f"cannot seat a party of {availability.party_size} at one table on "
             f"{availability.date}. If you would like, the team can call you about "
             "arranging the room."
@@ -224,6 +245,23 @@ def conflict_reply(availability: SlotStatus, restaurant: Restaurant) -> str:
         f"{availability.time} on {availability.date} is fully booked. I have "
         f"{offered} free for {availability.party_size} instead. Which of those "
         "works for you?"
+    )
+
+
+def available_reply(availability: SlotStatus) -> str:
+    """The engine's answer when the slot turns out to be free.
+
+    A turn that changes the party or the time is resolved after the model has
+    already spoken, so the model cannot have reported the result: its prompt was
+    built before it read the message. Left alone it says "let me check" and nothing
+    follows, because this endpoint makes one model call. Appending rather than
+    replacing keeps whatever the model asked for next.
+    """
+    kind = availability.type
+    where = f" at a {TYPE_PHRASE.get(kind, kind)}" if kind else ""
+    return (
+        f"{availability.time} on {availability.date} is free for "
+        f"{availability.party_size}{where}."
     )
 
 

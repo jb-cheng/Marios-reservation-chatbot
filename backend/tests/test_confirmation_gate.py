@@ -167,7 +167,11 @@ def test_a_correction_keeps_its_own_reply(
     client, monkeypatch: pytest.MonkeyPatch, saturday: date
 ) -> None:
     """A turn that changed something is a turn that is still working, even when it
-    ends in a question and the message is short."""
+    ends in a question and the message is short.
+
+    The model's words survive, and the engine's answer follows them: the draft held
+    19:00, so 20:00 being free is something the prompt never told the model.
+    """
     slots = {**COMPLETE, "date": saturday.isoformat()}
     stub_provider(
         monkeypatch,
@@ -178,7 +182,8 @@ def test_a_correction_keeps_its_own_reply(
 
     body = post(client, "make it 8", slots).json()
 
-    assert body["reply"] == "Noted, 20:00 it is. Anything else?"
+    assert body["reply"].startswith("Noted, 20:00 it is. Anything else?")
+    assert f"20:00 on {saturday.isoformat()} is free for 4." in body["reply"]
     assert body["slots"]["time"] == "20:00"
 
 
