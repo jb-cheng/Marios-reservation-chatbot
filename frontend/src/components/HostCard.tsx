@@ -1,3 +1,5 @@
+import { Volume2, VolumeX } from "lucide-react";
+
 import { Avatar } from "@/components/Avatar";
 import type { AvatarState } from "@/components/Avatar";
 import type { AgentMode } from "@/config";
@@ -9,6 +11,9 @@ type Props = {
   mode: AgentMode;
   onModeChange: (mode: AgentMode) => void;
   voiceProvider: string | null;
+  soundEnabled: boolean;
+  audioBlocked: boolean;
+  onToggleSound: () => void;
 };
 
 const STATUS: Record<AvatarState, string> = {
@@ -16,7 +21,7 @@ const STATUS: Record<AvatarState, string> = {
   speaking: "Speaking", error: "Please try again",
 };
 
-export function HostCard({ avatar, level, mode, onModeChange, voiceProvider }: Props) {
+export function HostCard({ avatar, level, mode, onModeChange, voiceProvider, soundEnabled, audioBlocked, onToggleSound }: Props) {
   return (
     <aside className="host-card on-ink flex min-w-0 flex-col rounded-md bg-ink p-5 text-cream shadow-host">
       <p className="eyebrow text-gold-200">At your service</p>
@@ -34,8 +39,14 @@ export function HostCard({ avatar, level, mode, onModeChange, voiceProvider }: P
             </button>
           ))}
         </div>
-        <p className="mt-2 text-[11px] leading-4 text-cream-dim">{mode === "voice" ? "Speak to Mario and hear the replies." : "Type a message, or use the mic to dictate."}</p>
-        {mode === "voice" && voiceProvider !== null && <p className="mt-2 text-[10px] leading-4 text-cream-dim">Voice: {voiceProvider}</p>}
+        <p className="mt-2 text-[11px] leading-4 text-cream-dim">{mode === "voice" ? "Tap the microphone to speak to Mario." : "Type a message, or use the mic to dictate."}</p>
+        <button type="button" data-sound-toggle onClick={onToggleSound} aria-label={soundEnabled ? "Mute sound" : "Unmute sound"} aria-pressed={soundEnabled}
+          className="mt-2 flex min-h-11 w-full items-center justify-center gap-2 rounded-[4px] border border-ink-500 px-3 text-[12px] text-cream hover:bg-cream/[0.07]">
+          {soundEnabled ? <Volume2 className="h-4 w-4" aria-hidden="true" /> : <VolumeX className="h-4 w-4" aria-hidden="true" />}
+          {soundEnabled ? "Sound on" : "Sound off"}
+        </button>
+        {audioBlocked && <p className="mt-1 text-[10px] leading-4 text-gold-200" role="status">Sound starts when you interact with the page.</p>}
+        {soundEnabled && voiceProvider !== null && <p className="mt-1 text-[10px] leading-4 text-cream-dim">Voice: {voiceProvider}</p>}
       </div>
     </aside>
   );

@@ -95,7 +95,7 @@ backend/
     llm.py                # ChatProvider protocol, Cohere/Groq/Gemini/Fake, fallback
     guardrails.py         # Prompt Guard 2, output safeguard, regex backstop
     prompts.py            # system prompt, availability block rendering
-    email.py              # transports: Resend or outbox files
+    email.py              # transports: Mailgun or outbox files
     schemas.py            # pydantic: request, response, LLM output
   tests/
   requirements.txt
@@ -130,8 +130,11 @@ the real plan lives on the server and a second copy here would drift from the en
 
 The mode labels are **Text** and **Voice**. Text keeps the textarea, Send button and small
 microphone for dictation. Voice replaces the textarea with a large microphone control; its
-transcript still appears in the conversation. Switching modes stops capture and playback.
-Text dictation is message input, not permission to book, as 4.4 specifies.
+transcript still appears in the conversation. Switching modes stops capture, not playback.
+Spoken output is on by default in both modes, with an independent Sound on/off button.
+Muting stops active and pending playback and prevents new synthesis requests. Unmuting reads
+out the latest assistant reply when idle. This preference lives only on the current page;
+no third storage key is added. Text dictation is never permission to book, as 4.4 specifies.
 
 ### 3.2 Quick answers, without replacing the conversation
 
@@ -261,7 +264,7 @@ that will fail to compile rather than a comment that will not.
    `openings` for time choices.
 9. Browser validates each incoming slot with `isValid`, merges with `mergeSlots`, writes once.
    The continuation turn in 4.1 is the exception: its revalidated saved slots are kept unchanged.
-10. Browser renders `reply` as text and speaks it only in Voice. A turn passing the spoken
+10. Browser renders `reply` as text and speaks it unless sound is muted, regardless of input mode. A turn passing the spoken
     confirmation gates proceeds to submission instead, using the submission result for its reply.
 11. The single receipt always reflects browser state. When every configured required slot is
     filled, the draft is not submitted and no consent dialog is open, it gains `ConfirmCard`
@@ -406,6 +409,14 @@ because no arrangement of the room serves them at any time. The agent says so an
 the team call, and `/submit` refuses the row. Reserving one table per party keeps that logic to a
 comparison instead of a subset-sum over tables.
 
+`no_table` has a second cause that is not the room's size: a seating type that cannot seat the
+party. No booth seats more than 6, so a booth for 8 is `no_table` while the room seats 8 at S5.
+Quoting the room's limit for that request produced the observed contradiction "the largest table
+seats 8, so I cannot seat a party of 8", and sent a customer away to phone about arranging a room
+that could already seat them. `SlotStatus.capacity` therefore carries the largest table of the
+*requested kind*, and both the prompt block and the spoken reply name that limit and offer the two
+ways out: another kind of table, or the requested kind for fewer guests.
+
 ### 6.2 Config
 
 Assumed values, all in `backend/app/config.py`, all literal edits:
@@ -430,7 +441,8 @@ is the smallest fitting candidate, so a party of 2 does not consume the 8 top.
 
 `SlotStatus.state` is one of three, and the distinction is what keeps the agent's wording
 truthful: `available` with a `table_id`, `booked` with the alternatives worth offering, and
-`no_table`, meaning the room itself cannot serve this party so there is nothing to offer.
+`no_table`, meaning no table of the requested kind can serve this party so there is nothing to
+offer. `capacity` says which limit binds, as described in 6.1.
 
 `alternatives` scans the remaining slots of that evening outward from the requested time in
 30 minute steps and returns the first three that resolve, each with a concrete `table_id`.
@@ -472,6 +484,27 @@ The rules for `reply` then cover the rest: suggest from the listed alternatives 
 `availability` also comes back in the HTTP response, because the UI needs the assigned
 `table_id` for the receipt and needs the alternatives as chips. The held counts do not: they
 are prompt material, and `as_dict()` leaves them out so the browser's contract is unchanged.
+`capacity` is left out for the same reason.
+
+The block describes the draft as it stood *before* the customer's message, because the prompt is
+built before the model reads it. So it is missing on a turn that first learns the date and time,
+and stale on a turn that changes the party, the time or the seating kind. `/api/chat` resolves the
+room again against the extracted slots in both cases, and states the answer itself rather than
+spending a second model call:
+
+- `booked` or `no_table` replaces the reply with `conflict_reply`, every time in it coming from
+  the engine.
+- `available` appends `available_reply`, so whatever the model asked for next survives. It
+  replaces instead when the prompt had said the room could not serve the draft, because the
+  model's reply then argues with the new answer.
+
+That last path exists because of a second observed failure: told "ok 6 guests then", the agent
+said "Let me check if a booth is available then" and nothing followed. The server had computed
+`available` and had no sentence for it, so a promise was the last thing the customer heard.
+
+A `booked` turn drops `time` from the slots, because a time the room cannot honour is never
+stored. A `no_table` turn keeps it: the party or the seating kind is what cannot be served, at
+every time, so the time is innocent, and deleting it left the next turn with nothing to check.
 
 ### 6.5 What the room has free, not just the slot that was asked about
 
@@ -573,48 +606,62 @@ case for exactly that idiom.
 
 ### 9.1 STT
 
-Default is the Web Speech API in `speech/stt.ts`: `continuous: true`, `interimResults: true`,
-interim transcript shown dimmed in the composer until final. Chromium implements it; Firefox
-largely does not, so the demo runs in Chrome or Edge and the text composer always works as the
-fallback path.
-
-Toggle to ElevenLabs Scribe v2 Realtime is off by default and requires a backend WebSocket
-proxy, because a realtime voice API key must not sit in a browser bundle.
+Text dictation uses the Web Speech API in `speech/stt.ts`, with `continuous: false` and
+`interimResults: true`. Voice mode prefers recorded audio sent to `/api/stt` when server
+capabilities advertise ElevenLabs transcription. A failed server transcription withdraws that
+capability for this page and offers browser recognition instead. Neither API key reaches the
+browser. The text composer remains usable when microphone permission or recognition fails.
 
 ### 9.2 TTS
 
-Edge TTS is a Python package, not a browser API, so it lives server-side:
-`POST /api/tts` returns mp3 bytes for a line of text. The browser fetches, `decodeAudioData`s
-into an `AudioBuffer`, and plays it through an `AudioContext` whose `AnalyserNode` feeds
-`analyser.ts`. That gives the brief's requirement of mouth movement driven by a real analyser
-reading TTS output: the analyser sees decoded samples, which it could not see from a plain
-`<audio>` element.
+Sound is on by default, independently of Text or Voice input. The greeting, chat replies and
+booking confirmation use the existing `/api/tts` endpoint, which prefers ElevenLabs and falls
+back to Edge TTS. The team has tested ElevenLabs successfully; the earlier rejected-key
+observation is historical, not a current setup requirement. The `x-tts-provider` response
+header identifies the voice that actually plays, in either input mode.
 
-When the backend TTS call fails, the fallback is browser `speechSynthesis`, and because no
-decoded stream exists there the avatar switches from analyser-driven mouth movement to a simple
-speaking loop. A degraded visual is honest; a mouth that never moves while audio plays is not.
+`speech/tts.ts` decodes the returned audio into a shared `AudioContext`. An `AnalyserNode`
+measures RMS waveform amplitude each animation frame; this drives the mouth rather than a
+free-running speaking loop. Speaking begins at playback start, not while fetching or decoding.
+Silence produces zero level. Muting aborts pending synthesis or autoplay waits, stops active
+playback, closes the mouth and prevents further speech requests. An already accepted server
+synthesis may still consume provider quota. Input-mode changes leave output playing; starting
+microphone capture, sending a new turn, resetting or leaving the page stops it.
 
-ElevenLabs Voice API is used only for the greeting line and the final confirmation line, gated
-by `ELEVENLABS_API_KEY`, to cap quota as the brief asks.
+If autoplay is blocked, the page says sound will start on interaction and waits without marking
+the host as speaking. A pointer or keyboard gesture in the conversation resumes the context.
+Only the current reply can be queued; mute or cancellation discards it. The browser's autoplay
+policy still decides whether a fresh page may speak before that first gesture.
 
-Every spoken line renders as visible text, with or without the toggle on.
+When server audio cannot be produced or decoded, browser `speechSynthesis` is the final fallback.
+Its actual start/end events drive speaking state, and word-boundary events produce short mouth
+movements when supported. No waveform or phoneme alignment is claimed for that fallback.
+Every spoken line remains visible as text, whether sound is enabled or muted.
 
 Microphone capture needs HTTPS or localhost. Localhost during development is fine. A campus
 network demo needs the built app served over TLS, not a bare `vite preview` on an http URL.
 
 ## 10. Avatar
 
-One component per state, as the brief asks: `idle`, `listening`, `thinking`, `speaking`,
-`error`. `speaking` is the analyser-driven one. State is a single discriminated union in
-ChatPanel, derived from the turn flow and the audio lifecycle, never from four independent
-booleans that can disagree.
+The avatar accepts `idle`, `listening`, `thinking`, `speaking` or `error`. `speaking` is the
+analyser-driven state. ChatPanel derives this single state from the turn flow and actual audio
+playback. All states now share one mounted renderer rather than replacing the portrait component
+and WebGL context on each transition.
 
-The states live inside `HostCard`, beside the mode toggle, so the customer sees one host
-rather than a portrait with a separate widget underneath it. The portrait is the team's
-illustration exported from the Figma file and it stays still: what changes between states is
-the light around the oval, so the host is recognisably the same person whether he is waiting,
-listening or talking. The ring is inset by the oval's own margins in the 236x276 export, so it
-lands on the gold rather than floating outside the drawing.
+The host lives inside `HostCard`, beside independent input-mode and sound controls. A
+lazy-loaded Three.js renderer draws a local stylized 3D bust with dark hair, warm skin, a
+cream dinner jacket and bow tie against a gold oval. There is no remote avatar service or
+model download. The existing 236:276 portrait footprint is retained across desktop and mobile.
+
+The jaw and lips follow the decoded waveform amplitude, opening a real mouth cavity and
+revealing teeth. This is amplitude-driven articulation, not phoneme-accurate lip sync. Silence,
+muting, cancellation and every non-speaking state close the mouth. Reduced motion disables
+idle head movement and blinking, while speech articulation remains tied to audible output.
+The renderer stays mounted across state changes and releases its graphics resources on unmount.
+
+If WebGL is unavailable or its context is lost, the original SVG portrait remains visible
+with a rudimentary animated mouth in the same position. Both renderers share the same audio
+level and silence rules; the fallback does not pretend to have phoneme alignment either.
 
 ## 11. HITL queue and admin
 
@@ -655,10 +702,12 @@ clash.
 
 ## 12. Email
 
-`email.py` picks a transport from config: Resend when `RESEND_API_KEY` exists, otherwise the
-outbox transport writes the rendered message to `backend/outbox/` and logs the path. The flow is
-identical either way, so the queue is testable before any email key exists and the deliverable
-screenshot is producible from the outbox file.
+`email.py` picks a transport from config: Mailgun when `MAILGUN_API_KEY`, `MAILGUN_DOMAIN` and
+`EMAIL_FROM` are all set, otherwise the outbox transport writes the rendered message to
+`backend/outbox/` and logs the path. The domain is a path segment of the sending URL
+(`https://api.mailgun.net/v3/<domain>/messages`), so a key alone cannot address the API, and the
+sender has to belong to that domain. The flow is identical either way, so the queue is testable
+before any email key exists and the deliverable screenshot is producible from the outbox file.
 
 Templates, two per D2:
 
@@ -687,9 +736,11 @@ Deterministic checks keep the same commands, run from the repository root:
 
 Frontend tests use `node --test` with Node 24 type stripping and a small `localStorage` shim.
 The suites cover `state`, `confirmation`, `validation-parity`, `pips`, `hours`,
-`site-navigation` and `speech-lifecycle`. Navigation tests use Vite to verify direct HTML
-handling and the six build entries; speech lifecycle tests use controlled browser API fakes,
-not live providers.
+`site-navigation`, `speech-lifecycle` and `avatar`. Navigation tests use Vite to verify direct
+HTML handling and the six build entries. Speech tests cover actual-start notifications, silence,
+autoplay waits, fetch/decode cancellation and audio-graph cleanup using controlled browser APIs.
+Avatar tests exercise the real mesh deformation, lips, cavity, reduced motion, resource reuse
+and SVG fallback. None of these tests calls live providers.
 
 - Criterion 3: a correction turn with `changed: ["party_size"]` overwrites, and the same value
   arriving without `changed` on a non-empty slot does not.
@@ -728,7 +779,7 @@ hallucination check against a real model.
 Browser verification uses the external Playwright script
 `C:/Users/jbnou/pw-scratch/marios-pages.mjs`, not a repository dependency. Run it with `node`
 against an isolated API using the fake provider, a temporary database and outbox directory,
-and `RESEND_API_KEY=""`. Before any test booking, its health check requires
+and `MAILGUN_API_KEY=""`. Before any test booking, its health check requires
 `email_transport: outbox` and `provider_chain: ["fake"]`. The script defaults to the frontend
 at `http://localhost:5174` (`MARIOS_URL` can override it) and routes API requests to
 `http://127.0.0.1:8010`. Speech capability and TTS responses are stubbed; these checks do not
@@ -759,9 +810,19 @@ Current coverage replaces the old fixed-width and pip-field browser checks:
    textarea, and mobile navigation opens a separate marketing document. Pips are buttons only,
    with no fields or steppers.
 
-The script checks for page errors. Live end-to-end speech, receipt delivery, criterion 1
-(under 90 seconds) and the admin queue appearing inside a second require separate verification;
-the fake/outbox browser checks do not establish them.
+The companion `C:/Users/jbnou/pw-scratch/marios-speech.mjs` checks default-on sound in Text,
+mute cancellation during synthesis and playback, prevention of further synthesis while muted,
+input-mode independence, controlled autoplay suspension, held-pointer and keyboard mute races,
+waveform-driven mouth movement and silence, desktop fit, mobile fallback, and loss of an active
+WebGL context. It uses the same isolated API and generated audio with a silent interval. Set
+`MARIOS_LIVE_SAMPLE` to a cached ElevenLabs audio file to include playback of a real provider
+response without spending quota again. Both scripts check for page errors; all 29 checks
+passed against the production preview.
+
+One short live `/api/tts` request returned ElevenLabs MP3 audio, which was then decoded and
+played through the 3D host in the browser. Live microphone transcription was not reverified
+in this change. Receipt delivery, criterion 1 (under 90 seconds) and the admin queue appearing
+inside a second also require separate verification; the fake/outbox checks do not establish them.
 
 Latency harness, `scripts/latency.py`. One methodological caveat worth stating before the
 presentation rather than during it: schema-validated structured output cannot be streamed,

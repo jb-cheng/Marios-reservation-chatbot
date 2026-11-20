@@ -94,6 +94,154 @@ test("cancelling active recording discards the utterance instead of uploading it
   assert.equal(uploads, 0);
 });
 
+function audioHarness(t: TestContext, state = "running") {
+  const events: string[] = [];
+  const levels: number[] = [];
+  let frame: FrameRequestCallback | undefined;
+  let sample = 128;
+  const source = {
+    buffer: null, onended: null as (() => void) | null,
+    connect() {}, disconnect() { events.push("disconnect source"); },
+    start() { events.push("play"); }, stop() { events.push("stop"); },
+  };
+  const context = new EventTarget() as EventTarget & Record<string, any>;
+  Object.assign(context, {
+    state, destination: {}, resume: async () => {},
+    decodeAudioData: async () => ({}),
+    createBufferSource: () => source,
+    createAnalyser: () => ({
+      fftSize: 512, frequencyBinCount: 256, connect() {},
+      disconnect() { events.push("disconnect analyser"); },
+      getByteTimeDomainData(samples: Uint8Array) { samples.fill(sample); },
+    }),
+  });
+  replaceGlobal(t, "AudioContext", class { constructor() { return context; } });
+  replaceGlobal(t, "requestAnimationFrame", (callback: FrameRequestCallback) => { frame = callback; return 1; });
+  replaceGlobal(t, "cancelAnimationFrame", () => { frame = undefined; });
+  t.mock.method(globalThis, "fetch", async () => new Response(new Uint8Array([0]), { headers: { "x-tts-provider": "elevenlabs" } }));
+  vite.moduleGraph.invalidateAll();
+  return {
+    events, levels, context, source,
+    handlers: {
+      onStart: () => events.push("start"), onBlocked: () => events.push("blocked"),
+      onEnd: () => events.push("end"), onError: (message: string) => events.push(message),
+      onProvider: (provider: string) => events.push(provider), onLevel: (level: number) => levels.push(level),
+    },
+    tick(value: number) { sample = value; frame?.(0); },
+  };
+}
+
+test("speech starts only with playback and waveform silence closes the mouth", async t => {
+  const audio = audioHarness(t);
+  const { speak } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const playback = await speak("Hello", audio.handlers);
+  assert.deepEqual(audio.events, ["play", "elevenlabs", "start"]);
+  audio.tick(160);
+  assert.ok(audio.levels.at(-1)! > 0);
+  audio.tick(128);
+  assert.equal(audio.levels.at(-1), 0);
+  playback.stop();
+  assert.equal(audio.levels.at(-1), 0);
+  assert.ok(audio.events.includes("disconnect source"));
+  assert.ok(audio.events.includes("disconnect analyser"));
+  assert.equal(audio.events.filter(event => event === "end").length, 1);
+});
+
+test("autoplay suspension waits without pretending the host is speaking", async t => {
+  const audio = audioHarness(t, "suspended");
+  const { speak, unlockSpeechAudio } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const pending = speak("Hello", audio.handlers);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(audio.events, ["blocked"]);
+  assert.equal(typeof unlockSpeechAudio, "function");
+  audio.context.resume = async () => {
+    audio.context.state = "running";
+    audio.context.dispatchEvent(new Event("statechange"));
+  };
+  unlockSpeechAudio();
+  const playback = await pending;
+  assert.deepEqual(audio.events, ["blocked", "play", "elevenlabs", "start"]);
+  playback.stop();
+});
+
+test("muting while autoplay is blocked discards queued speech", async t => {
+  const audio = audioHarness(t, "suspended");
+  const { speak } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const controller = new AbortController();
+  const pending = speak("Hello", audio.handlers, controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(audio.events, ["blocked"]);
+  controller.abort();
+  await pending;
+  audio.context.state = "running";
+  audio.context.dispatchEvent(new Event("statechange"));
+  assert.ok(!audio.events.includes("play"));
+});
+
+test("aborting active playback stops audio and releases its graph", async t => {
+  const audio = audioHarness(t);
+  const { speak } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const controller = new AbortController();
+  await speak("Hello", audio.handlers, controller.signal);
+  audio.tick(160);
+  controller.abort();
+  assert.ok(audio.events.includes("stop"));
+  assert.ok(audio.events.includes("disconnect analyser"));
+  assert.equal(audio.levels.at(-1), 0);
+});
+
+test("cancelling while decoding prevents both playback and fallback", async t => {
+  const audio = audioHarness(t);
+  let decoded!: (buffer: object) => void;
+  audio.context.decodeAudioData = () => new Promise(resolve => { decoded = resolve; });
+  const { speak } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const controller = new AbortController();
+  const pending = speak("Hello", audio.handlers, controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  decoded({});
+  await pending;
+  assert.deepEqual(audio.events, []);
+});
+
+test("natural playback end closes the mouth and releases its graph exactly once", async t => {
+  const audio = audioHarness(t);
+  const { speak } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const playback = await speak("Hello", audio.handlers);
+  audio.tick(160);
+  audio.source.onended?.();
+  playback.stop();
+  assert.equal(audio.levels.at(-1), 0);
+  assert.equal(audio.events.filter(event => event === "end").length, 1);
+  assert.equal(audio.events.filter(event => event === "disconnect source").length, 1);
+});
+
+test("browser fallback reports actual start and ignores boundaries after cancellation", async t => {
+  let utterance: any;
+  let cancelled = 0;
+  const events: string[] = [];
+  const levels: number[] = [];
+  replaceGlobal(t, "SpeechSynthesisUtterance", class { constructor(_text: string) {} });
+  replaceGlobal(t, "speechSynthesis", { speak(value: unknown) { utterance = value; }, cancel() { cancelled++; } });
+  t.mock.method(globalThis, "fetch", async () => new Response("Unavailable", { status: 502 }));
+  const { speak } = await vite.ssrLoadModule("/src/speech/tts.ts");
+  const controller = new AbortController();
+  await speak("Hello there", {
+    onStart: () => events.push("start"), onEnd: () => events.push("end"), onError() {},
+    onProvider: (provider: string) => events.push(provider), onLevel: (level: number) => levels.push(level),
+  }, controller.signal);
+  assert.deepEqual(events, []);
+  utterance.onstart();
+  assert.deepEqual(events, ["browser", "start"]);
+  utterance.onboundary({ name: "word" });
+  assert.ok(levels.at(-1)! > 0);
+  controller.abort();
+  assert.equal(cancelled, 1);
+  assert.equal(levels.at(-1), 0);
+  utterance.onboundary?.({ name: "word" });
+  assert.equal(levels.at(-1), 0);
+});
+
 test("an aborted spoken reply never falls back to browser audio", async t => {
   let resolve!: (response: Response) => void;
   let spoken = 0;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent, PointerEvent } from "react";
 import { RotateCcw } from "lucide-react";
 
 import { ApiError, fetchSpeechCapabilities, postChat, submitReservation } from "@/api/client";
@@ -18,7 +19,7 @@ import { createRecorder } from "@/speech/recorder";
 import type { Recorder } from "@/speech/recorder";
 import { createRecognizer, isSpeechRecognitionSupported } from "@/speech/stt";
 import type { Recognizer } from "@/speech/stt";
-import { speak } from "@/speech/tts";
+import { speak, unlockSpeechAudio } from "@/speech/tts";
 import type { SpeechPlayback } from "@/speech/tts";
 import { isAffirmation } from "@/state/confirmation";
 import { isComplete, mergeSlots } from "@/state/merge";
@@ -72,6 +73,9 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const [listening, setListening] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const soundEnabledRef = useRef(true);
   const [level, setLevel] = useState(0);
   const [voiceProvider, setVoiceProvider] = useState<string | null>(null);
   const [speechCaps, setSpeechCaps] = useState<SpeechCapabilities | null>(null);
@@ -104,6 +108,7 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
     playbackRef.current?.stop();
     playbackRef.current = null;
     setSpeaking(false);
+    setAudioBlocked(false);
     setLevel(0);
   }, []);
 
@@ -115,16 +120,18 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   }, []);
 
   const speakReply = useCallback((text: string) => {
-    if (modeRef.current !== "voice") return;
+    if (!soundEnabledRef.current) return;
     stopAudio();
+    setVoiceProvider(null);
     const controller = new AbortController();
     audioRequestRef.current = controller;
-    setSpeaking(true);
     void speak(text, {
-      onLevel: setLevel,
-      onProvider: setVoiceProvider,
-      onEnd: () => { if (!controller.signal.aborted) { setSpeaking(false); setLevel(0); } },
-      onError: message => { if (!controller.signal.aborted) { setNotice(message); setSpeaking(false); } },
+      onLevel: value => { if (!controller.signal.aborted) setLevel(value); },
+      onProvider: provider => { if (!controller.signal.aborted) setVoiceProvider(provider); },
+      onStart: () => { if (!controller.signal.aborted) { setSpeaking(true); setAudioBlocked(false); } },
+      onBlocked: () => { if (!controller.signal.aborted) setAudioBlocked(true); },
+      onEnd: () => { if (!controller.signal.aborted) { setSpeaking(false); setAudioBlocked(false); setLevel(0); } },
+      onError: message => { if (!controller.signal.aborted) { setNotice(message); setSpeaking(false); setAudioBlocked(false); } },
     }, controller.signal).then(playback => {
       if (controller.signal.aborted) playback.stop();
       else playbackRef.current = playback;
@@ -323,10 +330,32 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const changeMode = (next: AgentMode) => {
     if (next === mode) return;
     stopCapture();
-    stopAudio();
     if (listening) setDraft("");
     modeRef.current = next;
     setMode(next);
+  };
+
+  const unlockFromInteraction = (event: KeyboardEvent | PointerEvent) => {
+    const soundControl = (event.target as Element).closest("[data-sound-toggle]");
+    if (soundControl && (!("key" in event) || event.key === "Enter" || event.key === " ")) {
+      // Cancel before a mute gesture can release the browser's pending autoplay permission.
+      if (soundEnabledRef.current) stopAudio();
+      return;
+    }
+    if (soundEnabledRef.current) unlockSpeechAudio();
+  };
+
+  const toggleSound = () => {
+    const enabled = !soundEnabledRef.current;
+    soundEnabledRef.current = enabled;
+    setSoundEnabled(enabled);
+    if (!enabled) {
+      stopAudio();
+      return;
+    }
+    unlockSpeechAudio();
+    const last = messages.at(-1);
+    if (last?.role === "assistant" && !busy && !listening && dialog === null) speakReply(last.content);
   };
 
   const startOver = () => {
@@ -359,9 +388,10 @@ export function ChatPanel({ store = browserStorage }: { store?: KVStorage }) {
   const alert = notice ?? configError;
 
   return (
-    <div className="reservation-workspace">
+    <div className="reservation-workspace" onPointerDownCapture={unlockFromInteraction} onKeyDownCapture={unlockFromInteraction}>
       <HostCard avatar={avatarState} level={level} mode={mode} onModeChange={changeMode}
-        voiceProvider={mode === "voice" && voiceProvider !== null ? VOICE_LABELS[voiceProvider] ?? voiceProvider : null} />
+        soundEnabled={soundEnabled} audioBlocked={audioBlocked} onToggleSound={toggleSound}
+        voiceProvider={voiceProvider !== null ? VOICE_LABELS[voiceProvider] ?? voiceProvider : null} />
       <section aria-label="Plan your reservation" className="reservation-card rounded-md border border-linen-300 bg-paper shadow-card">
         <header className="reservation-card-header flex items-center justify-between gap-4 border-b border-linen-300">
           <div>

@@ -105,9 +105,11 @@ export function SiteFooter({ name, compact = false }: { name: string; compact?: 
               confirmed.
             </p>
             <p className="mt-2 text-ink-400">
-              In Voice mode, recordings can be sent to the service for transcription,
-              and the host&rsquo;s replies are sent out to be spoken. The dictation microphone
-              uses your browser&rsquo;s speech service. Typing a message sends no audio.
+              In Voice mode, recordings can be sent to the service for transcription.
+              The dictation microphone uses your browser&rsquo;s speech service. Sound is on
+              by default in both modes: the host&rsquo;s replies are sent to a speech provider
+              to be read aloud. Mute sound to stop playback and stop sending further replies
+              for speech. Typing does not record or send your microphone audio.
             </p>
           </section>
 
